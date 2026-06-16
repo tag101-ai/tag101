@@ -7,6 +7,7 @@ from ipaddress import ip_address
 from typing import Any
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from .models import (
     LeaseRequest,
@@ -27,6 +28,13 @@ from .models import (
 from .signing import sign_model, wallet_hotkey
 
 
+TASK_SERVER_RETRY = retry(
+    stop=stop_after_attempt(2),
+    wait=wait_fixed(60),
+    reraise=True,
+)
+
+
 class TaskServerClient:
     def __init__(
         self,
@@ -41,6 +49,7 @@ class TaskServerClient:
         self.verify_ssl = bool(verify_ssl)
         self.transport = transport
 
+    @TASK_SERVER_RETRY
     async def lease(
         self,
         *,
@@ -60,7 +69,10 @@ class TaskServerClient:
             block=int(block),
             profile=profile or {},
         )
-        body = SignedLeaseRequest(payload=payload, signature=sign_model(wallet, payload))
+        body = SignedLeaseRequest(
+            payload=payload,
+            signature=sign_model(wallet, payload),
+        )
         async with httpx.AsyncClient(
             base_url=self.base_url,
             timeout=self.timeout,
@@ -71,6 +83,7 @@ class TaskServerClient:
             response.raise_for_status()
             return TaskLease.model_validate(response.json())
 
+    @TASK_SERVER_RETRY
     async def report(
         self,
         *,
@@ -108,6 +121,7 @@ class TaskServerClient:
             response = await client.post("/tasks/report", json=body.model_dump())
             response.raise_for_status()
 
+    @TASK_SERVER_RETRY
     async def upload_scoreboard(
         self,
         *,
@@ -145,6 +159,7 @@ class TaskServerClient:
             response.raise_for_status()
             return response.json()
 
+    @TASK_SERVER_RETRY
     async def latest_scoreboards(
         self,
         *,
@@ -175,6 +190,7 @@ class TaskServerClient:
             payloads = response.json().get("scoreboards", [])
         return [SignedScoreboardSnapshot.model_validate(item) for item in payloads]
 
+    @TASK_SERVER_RETRY
     async def announce_miner_axon(
         self,
         *,
@@ -214,6 +230,7 @@ class TaskServerClient:
             response.raise_for_status()
             return response.json()
 
+    @TASK_SERVER_RETRY
     async def miner_axons(
         self,
         *,

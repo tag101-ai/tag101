@@ -73,12 +73,20 @@ class SolverValidator:
 
     async def forward_once(self) -> None:
         started = time.perf_counter()
-        lease = await self.client.lease(
-            wallet=self.runtime.wallet,
-            netuid=int(self.config.netuid),
-            uid=int(self.runtime.uid),
-            profile=self._task_profile(),
-        )
+        try:
+            lease = await self.client.lease(
+                wallet=self.runtime.wallet,
+                netuid=int(self.config.netuid),
+                uid=int(self.runtime.uid),
+                profile=self._task_profile(),
+            )
+        except Exception as exc:
+            self.bt.logging.warning(
+                "task lease failed after task server retries; skipping validator round "
+                f"error={type(exc).__name__}: {exc}"
+            )
+            await asyncio.sleep(60.0)
+            return
         self.bt.logging.info(
             f"VALIDATOR_LEASED_TASK task={lease.task_id} kind={lease.task_kind}"
         )
@@ -102,23 +110,35 @@ class SolverValidator:
         self.scoreboard.resize(int(getattr(self.runtime.metagraph, "n", len(self.scoreboard.ema))))
         self.scoreboard.observe(selected_uids, scores.rewards)
         self.scoreboard.save(self.state_path)
-        await self._upload_scoreboard()
+        try:
+            await self._upload_scoreboard()
+        except Exception as exc:
+            self.bt.logging.warning(
+                "scoreboard upload failed after task server retries "
+                f"error={type(exc).__name__}: {exc}"
+            )
 
-        await self.client.report(
-            wallet=self.runtime.wallet,
-            netuid=int(self.config.netuid),
-            uid=int(self.runtime.uid),
-            task_id=lease.task_id,
-            miner_uids=selected_uids,
-            miner_hotkeys=miner_hotkeys,
-            miner_answers=answers,
-            rewards=scores.rewards,
-            metadata={
-                "task_kind": lease.task_kind,
-                "spec_version": lease.spec_version,
-                **scores.report_metadata(),
-            },
-        )
+        try:
+            await self.client.report(
+                wallet=self.runtime.wallet,
+                netuid=int(self.config.netuid),
+                uid=int(self.runtime.uid),
+                task_id=lease.task_id,
+                miner_uids=selected_uids,
+                miner_hotkeys=miner_hotkeys,
+                miner_answers=answers,
+                rewards=scores.rewards,
+                metadata={
+                    "task_kind": lease.task_kind,
+                    "spec_version": lease.spec_version,
+                    **scores.report_metadata(),
+                },
+            )
+        except Exception as exc:
+            self.bt.logging.warning(
+                "task report failed after task server retries "
+                f"error={type(exc).__name__}: {exc}"
+            )
 
         elapsed = time.perf_counter() - started
         self.bt.logging.info(
@@ -248,11 +268,18 @@ class SolverValidator:
         if self.runtime.block - self.last_weight_block < max(1, epoch // 2):
             return
 
-        scoreboards = await self.client.latest_scoreboards(
-            wallet=self.runtime.wallet,
-            netuid=int(self.config.netuid),
-            uid=int(self.runtime.uid),
-        )
+        try:
+            scoreboards = await self.client.latest_scoreboards(
+                wallet=self.runtime.wallet,
+                netuid=int(self.config.netuid),
+                uid=int(self.runtime.uid),
+            )
+        except Exception as exc:
+            self.bt.logging.warning(
+                "latest scoreboards lookup failed after task server retries "
+                f"error={type(exc).__name__}: {exc}"
+            )
+            return
         current_block = self.runtime.block
         aggregated = aggregate_validator_scores(
             metagraph=self.runtime.metagraph,
