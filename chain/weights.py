@@ -105,7 +105,7 @@ def aggregate_validator_scores(
             size=size,
             uid_by_hotkey=uid_by_hotkey,
         )
-        weighted_weights += stake * normalized_weights(aligned_scores)
+        weighted_weights += stake * _nonnegative_distribution(aligned_scores)
         total_stake += stake
         accepted.append(signer)
 
