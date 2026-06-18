@@ -14,8 +14,10 @@ from typing import Sequence
 
 try:
     from . import docker_node
+    from .node_common import DEFAULT_AUTO_UPDATE_INTERVAL_SECONDS, load_env_files, strip_remainder_separator
 except ImportError:  # pragma: no cover - used when this file is executed directly.
     import docker_node  # type: ignore
+    from node_common import DEFAULT_AUTO_UPDATE_INTERVAL_SECONDS, load_env_files, strip_remainder_separator  # type: ignore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +54,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Watch git upstream and restart one Dockerized node after updates.")
     parser.add_argument("--repo", default=str(REPO_ROOT), help="Repository root. Defaults to this checkout.")
     parser.add_argument("--upstream", default="@{u}", help="Git ref to compare against. Defaults to the current branch upstream.")
-    parser.add_argument("--interval-seconds", type=float, default=60.0)
+    parser.add_argument("--interval-seconds", type=float, default=DEFAULT_AUTO_UPDATE_INTERVAL_SECONDS)
     parser.add_argument("--role", choices=sorted(docker_node.ROLE_COMMANDS), required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--env-file", action="append", default=[])
@@ -149,9 +151,9 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
 
 def update_commands(args: argparse.Namespace) -> list[list[str]]:
     env_files = [Path(path) for path in args.env_file]
-    env = docker_node.load_env_files(env_files)
+    env = load_env_files(env_files)
     image = args.image or env.get("NODE_IMAGE") or docker_node.DEFAULT_IMAGE
-    passthrough = docker_node.strip_remainder_separator(args.passthrough)
+    passthrough = strip_remainder_separator(args.passthrough)
 
     build_command = [
         sys.executable,

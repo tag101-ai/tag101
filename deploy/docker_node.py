@@ -13,7 +13,38 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence
+
+try:
+    from .node_common import (
+        CANONICAL_WALLET_PATH_OPTIONS,
+        DEFAULT_AUTO_UPDATE_INTERVAL_SECONDS,
+        current_git_sha,
+        last_option_value,
+        load_env_file,
+        load_env_files,
+        normalize_wallet_path_options,
+        parse_env_value,
+        resolve_host_path,
+        rewrite_option_values,
+        split_env_args,
+        strip_remainder_separator,
+    )
+except ImportError:  # pragma: no cover - used when this file is executed directly.
+    from node_common import (  # type: ignore
+        CANONICAL_WALLET_PATH_OPTIONS,
+        DEFAULT_AUTO_UPDATE_INTERVAL_SECONDS,
+        current_git_sha,
+        last_option_value,
+        load_env_file,
+        load_env_files,
+        normalize_wallet_path_options,
+        parse_env_value,
+        resolve_host_path,
+        rewrite_option_values,
+        split_env_args,
+        strip_remainder_separator,
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,10 +53,8 @@ DOCKER_CONTEXT = REPO_ROOT
 DEFAULT_IMAGE = "tag101:latest"
 DEFAULT_WALLET_CONTAINER_PATH = "/home/node/.bittensor/wallets"
 DEFAULT_STATE_CONTAINER_PATH = "/home/node/state"
-DEFAULT_AUTO_UPDATE_INTERVAL_SECONDS = 60.0
 DEFAULT_DOCKER_NETWORK = "host"
 DEPLOY_STATE_DIR = REPO_ROOT / ".deploy-state"
-CANONICAL_WALLET_PATH_OPTIONS = {"--wallet.path"}
 ROLE_COMMANDS = {
     "validator": "tag101-validator",
     "miner": "tag101-miner",
@@ -256,6 +285,11 @@ def auto_update_commands_from_args(args: argparse.Namespace, env_files: Sequence
 
 
 def monitor_commands_from_args(args: argparse.Namespace, env_files: Sequence[Path]) -> list[PlannedCommand]:
+    command = monitor_process_command(args, env_files)
+    return [PlannedCommand(command, background=True, log_file=monitor_log_path(args.name))]
+
+
+def monitor_process_command(args: argparse.Namespace, env_files: Sequence[Path]) -> list[str]:
     command = [
         sys.executable,
         "-m",
@@ -279,7 +313,7 @@ def monitor_commands_from_args(args: argparse.Namespace, env_files: Sequence[Pat
     passthrough = strip_remainder_separator(args.passthrough)
     if passthrough:
         command.extend(["--", *passthrough])
-    return [PlannedCommand(command, background=True, log_file=monitor_log_path(args.name))]
+    return command
 
 
 def auto_update_commands(
@@ -340,6 +374,7 @@ def monitor_loop(args: argparse.Namespace) -> None:
                             cwd=REPO_ROOT,
                         )
                         run_planned_commands(restart_without_monitor, dry_run=False, cwd=REPO_ROOT)
+                        reexec_monitor(args, env_files)
                 except Exception as exc:
                     print(f"auto_update_monitor name={args.name} error={type(exc).__name__}: {exc}", flush=True)
                 time.sleep(max(1.0, float(args.auto_update_interval_seconds)))
@@ -348,6 +383,12 @@ def monitor_loop(args: argparse.Namespace) -> None:
                 pid_path.unlink()
             except FileNotFoundError:
                 pass
+
+
+def reexec_monitor(args: argparse.Namespace, env_files: Sequence[Path]) -> None:
+    command = monitor_process_command(args, env_files)
+    print(f"auto_update_monitor name={args.name} status=reexecing_after_update", flush=True)
+    os.execv(command[0], command)
 
 
 def node_image(*, image: str | None, env_files: Sequence[Path]) -> str:
@@ -544,128 +585,6 @@ def auto_process_args(env: Mapping[str, str]) -> list[str]:
     if external_ip:
         args.extend(["--axon.external_ip", external_ip])
     return args
-
-
-def load_env_files(paths: Iterable[Path]) -> dict[str, str]:
-    env: dict[str, str] = {}
-    for path in paths:
-        env.update(load_env_file(path))
-    return env
-
-
-def load_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        key, separator, value = line.partition("=")
-        if not separator:
-            raise ValueError(f"{path}:{line_number}: expected KEY=VALUE")
-        key = key.strip()
-        if not key:
-            raise ValueError(f"{path}:{line_number}: empty key")
-        values[key] = parse_env_value(value.strip())
-    return values
-
-
-def parse_env_value(value: str) -> str:
-    if not value:
-        return ""
-    try:
-        tokens = shlex.split(value, comments=False, posix=True)
-    except ValueError:
-        return value
-    if len(tokens) == 1:
-        return tokens[0]
-    return value
-
-
-def split_env_args(value: str) -> list[str]:
-    if not value:
-        return []
-    return shlex.split(value)
-
-
-def normalize_wallet_path_options(args: Sequence[str]) -> list[str]:
-    normalized: list[str] = []
-    for arg in args:
-        if arg == "--wallet-path":
-            normalized.append("--wallet.path")
-        elif arg.startswith("--wallet-path="):
-            normalized.append("--wallet.path=" + arg.split("=", 1)[1])
-        else:
-            normalized.append(arg)
-    return normalized
-
-
-def last_option_value(args: Sequence[str], option_names: set[str]) -> str | None:
-    value: str | None = None
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if "=" in arg:
-            option, raw_value = arg.split("=", 1)
-            if option in option_names:
-                value = raw_value
-            index += 1
-            continue
-        if arg in option_names and index + 1 < len(args):
-            value = args[index + 1]
-            index += 2
-            continue
-        index += 1
-    return value
-
-
-def rewrite_option_values(args: Sequence[str], option_names: set[str], value: str) -> list[str]:
-    rewritten: list[str] = []
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if "=" in arg:
-            option, _raw_value = arg.split("=", 1)
-            if option in option_names:
-                rewritten.append(f"{option}={value}")
-            else:
-                rewritten.append(arg)
-            index += 1
-            continue
-        rewritten.append(arg)
-        if arg in option_names and index + 1 < len(args):
-            rewritten.append(value)
-            index += 2
-            continue
-        index += 1
-    return rewritten
-
-
-def strip_remainder_separator(args: Sequence[str]) -> list[str]:
-    if args and args[0] == "--":
-        return list(args[1:])
-    return list(args)
-
-
-def resolve_host_path(value: str, cwd: Path) -> str:
-    expanded = os.path.expandvars(os.path.expanduser(value))
-    path = Path(expanded)
-    if not path.is_absolute():
-        path = cwd / path
-    return str(path)
-
-
-def current_git_sha(repo_root: Path) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--short=12", "HEAD"],
-        cwd=repo_root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.stdout.strip() or "unknown"
 
 
 def run_planned_commands(commands: Sequence[PlannedCommand], *, dry_run: bool, cwd: Path) -> None:

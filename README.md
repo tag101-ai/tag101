@@ -125,7 +125,8 @@ pip install -e .
 
 Docker is the recommended way to run a miner or validator. It keeps the runtime
 environment consistent and enables the built-in Docker auto-update flow by
-default.
+default. After a successful update, the Docker monitor re-execs itself so the
+watcher also runs the updated code.
 
 Build the miner/validator image:
 
@@ -138,7 +139,7 @@ python -m tag101.deploy.docker_node build --image tag101:latest
 Prepare a miner env file:
 
 ```bash
-cp deploy/miner.env.example miner.env
+cp deploy/miner.docker.example miner.env
 ```
 
 Edit `miner.env` for your host paths, network, wallet, hotkey, axon settings,
@@ -158,7 +159,7 @@ python -m tag101.deploy.docker_node start \
 Prepare a validator env file:
 
 ```bash
-cp deploy/validator.env.example validator.env
+cp deploy/validator.docker.example validator.env
 ```
 
 Edit `validator.env` for your host paths, network, wallet, hotkey, and axon
@@ -171,11 +172,50 @@ python -m tag101.deploy.docker_node start \
   --env-file validator.env
 ```
 
-### Useful commands:
+#### Useful commands
 
 ```bash
 python -m tag101.deploy.docker_node restart --role miner --name sn101-miner --env-file miner.env
 python -m tag101.deploy.docker_node status --name sn101-miner
 docker logs -f sn101-miner
 python -m tag101.deploy.docker_node stop --name sn101-miner
+```
+
+### Run with PM2
+
+PM2 can also run a miner or validator directly on the host. Install PM2
+separately, keep using the Python virtual environment from the install step,
+and point `PYTHON_BIN` at that venv Python in the env file.
+
+#### Miner
+
+```bash
+cp deploy/miner.pm2.env.example miner.pm2.env
+$EDITOR miner.pm2.env
+
+python -m tag101.deploy.pm2_node start \
+  --role miner \
+  --name sn101-miner \
+  --env-file miner.pm2.env
+```
+
+#### Validator
+
+```bash
+cp deploy/validator.pm2.env.example validator.pm2.env
+$EDITOR validator.pm2.env
+
+python -m tag101.deploy.pm2_node start \
+  --role validator \
+  --name sn101-validator \
+  --env-file validator.pm2.env
+```
+
+#### Useful commands
+
+```bash
+python -m tag101.deploy.pm2_node restart --role miner --name sn101-miner --env-file miner.pm2.env
+python -m tag101.deploy.pm2_node status --name sn101-miner
+pm2 logs sn101-miner
+python -m tag101.deploy.pm2_node stop --name sn101-miner
 ```

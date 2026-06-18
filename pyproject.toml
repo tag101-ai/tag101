@@ -40,4 +40,4 @@ packages = [
 package-dir = { "tag101" = "." }
 
 [tool.setuptools.package-data]
-"tag101.deploy" = ["*.env.example"]
+"tag101.deploy" = ["*.example"]

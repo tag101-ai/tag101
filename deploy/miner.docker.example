@@ -1,0 +1,29 @@
+# Docker image tag built by python -m tag101.deploy.docker_node build.
+NODE_IMAGE=tag101:latest
+
+# Host paths mounted into the container.
+WALLET_HOST_PATH=/home/user/.bittensor/wallets
+STATE_HOST_DIR=/home/user/node-state/miner
+
+# Containers use host networking by default, so no Docker -p forwarding is
+# needed. The deploy script still passes --axon.port and --axon.external_port
+# from this value unless later args override them.
+DOCKER_NETWORK=host
+AXON_PORT=<MINER_AXON_PORT>
+AXON_EXTERNAL_IP=<MINER_AXON_EXTERNAL_IP>
+
+# GPU miners need NVIDIA driver and NVIDIA Container Toolkit on the host.
+# Uncomment to pass the Docker GPU runtime flag, equivalent to docker run --gpus all.
+# DOCKER_GPUS=all
+
+# The default SN101 reference miner uses OpenAI for tag generation.
+# OPENAI_API_KEY=<OPENAI_API_KEY>
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENAI_MODEL=gpt-4o-mini
+
+# Base miner args. Fill in endpoint and wallet values before starting. Extra CLI
+# args after "--" in docker_node.py are appended after this value and therefore
+# win if an option appears twice.
+NODE_ARGS=--netuid 101 --subtensor.network <SUBTENSOR_ENDPOINT> --wallet.name <WALLET_NAME> --wallet.hotkey <HOTKEY_NAME> --logging.info
+# To override a task solver in the miner environment, append:
+#   --task.miner_module your_package.your_miner_module
