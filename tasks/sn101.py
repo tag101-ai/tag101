@@ -42,10 +42,16 @@ SN101_TEST_FALLBACK_TAGS = (
 )
 
 
-def solve_problem(envelope: TaskEnvelope, chain_runtime: ChainRuntime) -> dict[str, Any]:
+def solve_problem(
+    envelope: TaskEnvelope,
+    chain_runtime: ChainRuntime,
+) -> dict[str, Any]:
     task_payload = dict(envelope.payload)
     post = str(task_payload.get("text", ""))
-    miner = ReferenceMiner(n_tags=SN101_MAX_TAGS, timeout_sec=int(SN101_TIME_LIMIT))
+    miner = ReferenceMiner(
+        n_tags=SN101_MAX_TAGS,
+        timeout_sec=int(SN101_TIME_LIMIT),
+    )
     try:
         tags = miner.generate_tags(post)
     except RuntimeError as exc:
@@ -68,6 +74,11 @@ def score_answers(
         n_tags_per_miner=SN101_MAX_TAGS,
         model_name=str(scoring.get("model_name", REFERENCE_MODEL_NAME)),
         proximity_rank_decay=float(scoring.get("proximity_rank_decay", 1.0)),
+        duplicate_penalty_enabled=bool(
+            scoring.get("duplicate_penalty_enabled", True),
+        ),
+        duplicate_penalty_k=float(scoring.get("duplicate_penalty_k", 0.06)),
+        duplicate_penalty_c=float(scoring.get("duplicate_penalty_c", 80.0)),
     )
 
     rewards = [float(value) for value in result.get("miner_scores", [])]
@@ -94,6 +105,9 @@ def _score_with_reference(
     n_tags_per_miner: int,
     model_name: str,
     proximity_rank_decay: float,
+    duplicate_penalty_enabled: bool,
+    duplicate_penalty_k: float,
+    duplicate_penalty_c: float,
 ) -> dict[str, Any]:
     from .sn101_reference.core.scoring import TagScorer
 
@@ -101,10 +115,16 @@ def _score_with_reference(
         model_name=model_name,
         n_tags_per_miner=n_tags_per_miner,
         proximity_rank_decay=proximity_rank_decay,
+        duplicate_penalty_enabled=duplicate_penalty_enabled,
+        duplicate_penalty_k=duplicate_penalty_k,
+        duplicate_penalty_c=duplicate_penalty_c,
     ).score(post, responses)
 
 
-def _miner_metrics(result: Mapping[str, Any], miner_count: int) -> list[dict[str, Any]]:
+def _miner_metrics(
+    result: Mapping[str, Any],
+    miner_count: int,
+) -> list[dict[str, Any]]:
     per_miner_keys = (
         "normalized_responses",
         "tag_scores",
@@ -113,6 +133,9 @@ def _miner_metrics(result: Mapping[str, Any], miner_count: int) -> list[dict[str
         "diversity_scores",
         "validity_details",
         "diversity_details",
+        "raw_miner_scores",
+        "duplicate_counts",
+        "duplicate_decays",
     )
     metrics: list[dict[str, Any]] = []
     for index in range(miner_count):
@@ -126,7 +149,12 @@ def _miner_metrics(result: Mapping[str, Any], miner_count: int) -> list[dict[str
 
 
 def _tags_from_answer(answer: Mapping[str, Any]) -> list[str]:
-    raw = answer.get("tags") or answer.get("labels") or answer.get("keywords") or []
+    raw = (
+        answer.get("tags")
+        or answer.get("labels")
+        or answer.get("keywords")
+        or []
+    )
     if isinstance(raw, str):
         values: Sequence[Any] = re.split(r"[,;\n|]+", raw)
     elif isinstance(raw, Sequence):
@@ -140,7 +168,8 @@ def _tags_from_answer(answer: Mapping[str, Any]) -> list[str]:
             continue
         # Keep normalization inside the reference scorer. Importing its
         # preprocessing module here would execute scoring/__init__.py and
-        # force miner startup to import sklearn even though miners do not score.
+        # force miner startup to import sklearn even though miners do not
+        # score.
         tag = value
         if tag:
             tags.append(tag)
@@ -157,5 +186,7 @@ def handler() -> TaskHandler:
         spec_version=SPEC_VERSION,
         solve_problem=solve_problem,
         score_answers=score_answers,
-        description="SN101 semantic tagging task backed by the reference scorer.",
+        description=(
+            "SN101 semantic tagging task backed by the reference scorer."
+        ),
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .consensus import ConsensusScorer
@@ -18,16 +19,24 @@ class TagScorer:
     N_TAGS_PER_MINER = 3
     CONSENSUS_WEIGHT = 0.60
     VALIDITY_DIVERSITY_WEIGHT = 0.40
+    DUPLICATE_PENALTY_K = 0.1
+    DUPLICATE_PENALTY_C = 50.0
 
     def __init__(
         self,
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
         n_tags_per_miner: int = N_TAGS_PER_MINER,
         proximity_rank_decay: float = 1.0,
+        duplicate_penalty_enabled: bool = True,
+        duplicate_penalty_k: float = DUPLICATE_PENALTY_K,
+        duplicate_penalty_c: float = DUPLICATE_PENALTY_C,
     ) -> None:
         self.model_name = model_name
         self.n_tags_per_miner = n_tags_per_miner
         self.proximity_rank_decay = proximity_rank_decay
+        self.duplicate_penalty_enabled = duplicate_penalty_enabled
+        self.duplicate_penalty_k = duplicate_penalty_k
+        self.duplicate_penalty_c = duplicate_penalty_c
         self._model = self._load_model(model_name)
         self._consensus_scorer = ConsensusScorer(
             model_name=model_name,
@@ -90,9 +99,16 @@ class TagScorer:
             aggregate_miner_score(scores=scores, top_k=self.n_tags_per_miner)
             for scores in tag_scores
         ]
+        penalty_result = self._apply_duplicate_penalty(
+            miner_scores=miner_scores,
+            normalized_responses=normalized_responses,
+        )
         return {
             "tag_scores": tag_scores,
-            "miner_scores": miner_scores,
+            "miner_scores": penalty_result["miner_scores"],
+            "raw_miner_scores": miner_scores,
+            "duplicate_counts": penalty_result["duplicate_counts"],
+            "duplicate_decays": penalty_result["duplicate_decays"],
             "consensus_scores": consensus_scores,
             "validity_scores": validity_scores,
             "diversity_scores": diversity_scores,
@@ -115,3 +131,41 @@ class TagScorer:
 
     def _flatten_scores(self, scores: list[list[float]]) -> list[float]:
         return [score for miner_scores in scores for score in miner_scores]
+
+    def _apply_duplicate_penalty(
+        self,
+        *,
+        miner_scores: list[float],
+        normalized_responses: list[list[str]],
+    ) -> dict[str, Any]:
+        if not self.duplicate_penalty_enabled:
+            return {
+                "miner_scores": miner_scores,
+                "duplicate_counts": [1 for _ in normalized_responses],
+                "duplicate_decays": [1.0 for _ in normalized_responses],
+            }
+
+        duplicate_counts_by_key: dict[tuple[str, ...], int] = {}
+        response_keys = [
+            self._duplicate_key(response) for response in normalized_responses
+        ]
+        for key in response_keys:
+            duplicate_counts_by_key[key] = duplicate_counts_by_key.get(key, 0) + 1
+
+        duplicate_counts = [duplicate_counts_by_key[key] for key in response_keys]
+        duplicate_decays = [self._duplicate_decay(count) for count in duplicate_counts]
+        adjusted_scores = [
+            score * decay for score, decay in zip(miner_scores, duplicate_decays)
+        ]
+        return {
+            "miner_scores": adjusted_scores,
+            "duplicate_counts": duplicate_counts,
+            "duplicate_decays": duplicate_decays,
+        }
+
+    def _duplicate_key(self, response: list[str]) -> tuple[str, ...]:
+        return tuple(sorted(" ".join(tag.split()) for tag in response if tag))
+
+    def _duplicate_decay(self, count: int) -> float:
+        exponent = self.duplicate_penalty_k * (float(count) - self.duplicate_penalty_c)
+        return 1.0 / (1.0 + math.exp(exponent))

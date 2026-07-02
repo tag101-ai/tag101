@@ -103,6 +103,17 @@ $$
 
 This score represents the miner’s performance on a single tagging task.
 
+### Duplicate Penalty
+
+`TagScorer` then scales each miner’s score down when the same tag set appears multiple times on one task. Let $n$ be the number of miners sharing that set:
+
+$$
+\text{AdjustedMinerScore}(m)
+= \text{MinerScore}(m) \times \frac{1}{1 + \exp\bigl(k \cdot (n - c)\bigr)}
+$$
+
+Reference defaults: $k = 0.1$, $c = 50$. Larger identical groups are penalized more sharply.
+
 Over time, validator scoreboards aggregate miner performance across multiple tasks and convert recent task-level scores into relative miner scores for weight calculation.
 
 ## **Quick Start**
