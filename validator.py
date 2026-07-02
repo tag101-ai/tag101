@@ -244,6 +244,7 @@ class SolverValidator:
             netuid=int(self.config.netuid),
             block=block,
             uid=int(self.runtime.uid),
+            version=2,
             scores=self.scoreboard.scores.astype(float).tolist(),
             miner_hotkeys=self._all_hotkeys(),
             metadata={
