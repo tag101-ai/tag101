@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ._bt import require_bittensor
-from .chain.dendrite import DendriteTransport
+from . import SCOREBOARD_VERSION
+from ._logging import configure_logging, get_logger
+from .chain.http_transport import HttpTransport
 from .chain.private_axons import is_usable_axon, private_axons_by_hotkey
 from .chain.runtime import ChainRuntime
 from .chain.scoreboard import ScoreBoard
@@ -21,8 +22,9 @@ from .tasks import TaskRegistry, TaskServerClient, default_registry
 
 class SolverValidator:
     def __init__(self, *, config: Any | None = None, registry: TaskRegistry | None = None):
-        self.bt = require_bittensor()
         self.config = config or build_config("validator")
+        configure_logging(self.config)
+        self.log = get_logger("validator")
         self.runtime = ChainRuntime(self.config, role="validator")
         self.registry = registry or default_registry()
         self.client = TaskServerClient(
@@ -30,9 +32,8 @@ class SolverValidator:
             timeout=float(self.config.task_server.timeout),
             verify_ssl=bool(self.config.task_server.verify_ssl),
         )
-        self.dendrite = self.runtime.dendrite()
-        self.transport = DendriteTransport(
-            self.dendrite,
+        self.transport = HttpTransport(
+            self.runtime.wallet,
             max_response_bytes=int(self.config.validator.max_response_bytes),
         )
         self.state_path = Path(self.config.neuron.storage_dir) / "scoreboard.json"
@@ -53,7 +54,7 @@ class SolverValidator:
                 f"{score_log} window={self.scoreboard.window_seconds}s "
                 f"softmax_beta={self.scoreboard.softmax_beta}"
             )
-        self.bt.logging.info(score_log)
+        self.log.info(score_log)
         self.step = 0
         self.last_weight_block = 0
         self.should_exit = False
@@ -71,7 +72,8 @@ class SolverValidator:
             profile["time_limit"] = self.config.task.time_limit
         return profile
 
-    async def forward_once(self) -> None:
+    async def forward_once(self) -> float:
+        """Run one validator round and return the seconds to wait before the next round."""
         started = time.perf_counter()
         try:
             lease = await self.client.lease(
@@ -81,27 +83,24 @@ class SolverValidator:
                 profile=self._task_profile(),
             )
         except Exception as exc:
-            self.bt.logging.warning(
+            self.log.warning(
                 "task lease failed after task server retries; skipping validator round "
                 f"error={type(exc).__name__}: {exc}"
             )
-            await asyncio.sleep(60.0)
-            return
-        self.bt.logging.info(
+            return 60.0
+        self.log.info(
             f"VALIDATOR_LEASED_TASK task={lease.task_id} kind={lease.task_kind}"
         )
         synapse = envelope_from_lease(lease)
         selected_uids = self._select_uids()
         if not selected_uids:
-            self.bt.logging.warning("no miner candidates available")
-            await asyncio.sleep(float(self.config.validator.forward_interval))
-            return
+            self.log.warning("no miner candidates available")
+            return float(self.config.validator.forward_interval)
 
         selected_uids, axons = await self._resolve_axons(selected_uids)
         if not selected_uids:
-            self.bt.logging.warning("no usable miner axons available")
-            await asyncio.sleep(float(self.config.validator.forward_interval))
-            return
+            self.log.warning("no usable miner axons available")
+            return float(self.config.validator.forward_interval)
         responses = await self.transport.query(axons=axons, synapse=synapse)
         answers = [self._answer_from_response(response) for response in responses]
         miner_hotkeys = self._hotkeys_for_uids(selected_uids)
@@ -113,7 +112,7 @@ class SolverValidator:
         try:
             await self._upload_scoreboard()
         except Exception as exc:
-            self.bt.logging.warning(
+            self.log.warning(
                 "scoreboard upload failed after task server retries "
                 f"error={type(exc).__name__}: {exc}"
             )
@@ -135,19 +134,17 @@ class SolverValidator:
                 },
             )
         except Exception as exc:
-            self.bt.logging.warning(
+            self.log.warning(
                 "task report failed after task server retries "
                 f"error={type(exc).__name__}: {exc}"
             )
 
         elapsed = time.perf_counter() - started
-        self.bt.logging.info(
+        self.log.info(
             f"VALIDATOR_SCORED_TASK task={lease.task_id} miners={selected_uids} rewards={scores.rewards} "
             f"elapsed={elapsed:.3f}s"
         )
-        delay = max(0.0, float(self.config.validator.forward_interval) - elapsed)
-        if delay:
-            await asyncio.sleep(delay)
+        return float(self.config.validator.forward_interval)
 
     def _select_uids(self) -> list[int]:
         policy = CandidatePolicy(
@@ -169,7 +166,7 @@ class SolverValidator:
                 block=self.runtime.block,
             )
         except Exception as exc:
-            self.bt.logging.warning(
+            self.log.warning(
                 "private miner axon lookup failed; falling back to metagraph axons "
                 f"error={type(exc).__name__}: {exc}"
             )
@@ -197,7 +194,7 @@ class SolverValidator:
                 resolved_axons.append(public_axon)
 
         if private_used or public_fallbacks:
-            self.bt.logging.info(
+            self.log.info(
                 "VALIDATOR_RESOLVED_MINER_AXONS "
                 f"private={private_used} "
                 f"metagraph_fallback={public_fallbacks}"
@@ -244,7 +241,7 @@ class SolverValidator:
             netuid=int(self.config.netuid),
             block=block,
             uid=int(self.runtime.uid),
-            version=2,
+            version=SCOREBOARD_VERSION,
             scores=self.scoreboard.scores.astype(float).tolist(),
             miner_hotkeys=self._all_hotkeys(),
             metadata={
@@ -255,7 +252,7 @@ class SolverValidator:
             },
         )
         if not result.get("accepted") or not result.get("updated", True):
-            self.bt.logging.warning(
+            self.log.warning(
                 "scoreboard upload returned unexpected response "
                 f"block={block} response={result}"
             )
@@ -276,7 +273,7 @@ class SolverValidator:
                 uid=int(self.runtime.uid),
             )
         except Exception as exc:
-            self.bt.logging.warning(
+            self.log.warning(
                 "latest scoreboards lookup failed after task server retries "
                 f"error={type(exc).__name__}: {exc}"
             )
@@ -289,14 +286,14 @@ class SolverValidator:
             current_block=current_block,
         )
         if not aggregated.accepted_hotkeys:
-            self.bt.logging.error(
+            self.log.error(
                 "no valid signed validator scoreboards available for set_weights "
                 f"scoreboards={len(scoreboards)} current_block={current_block} "
                 f"rejected={list(aggregated.rejected[:10])}"
             )
             return
         if aggregated.rejected:
-            self.bt.logging.warning(
+            self.log.warning(
                 "ignored signed validator scoreboards: "
                 f"{list(aggregated.rejected[:10])}"
             )
@@ -311,37 +308,39 @@ class SolverValidator:
         )
         if ok:
             self.last_weight_block = self.runtime.block
-            self.bt.logging.info(
+            self.log.info(
                 "VALIDATOR_SET_WEIGHTS_SUCCESS weights submitted "
                 f"validators={len(aggregated.accepted_hotkeys)} stake={aggregated.total_stake:.6f}"
             )
         else:
-            self.bt.logging.error(f"weight submission failed: {message}")
+            self.log.error(f"weight submission failed: {message}")
 
     def serve_validator_axon(self) -> Any | None:
-        if bool(self.config.validator.axon_off):
-            return None
-        axon = self.runtime.axon()
-        try:
-            self.runtime.serve_axon(axon)
-            axon.start()
-            self.bt.logging.info("validator axon served")
-            return axon
-        except Exception as exc:
-            self.bt.logging.warning(f"validator axon not served: {exc}")
-            return None
+        return None
 
     def run(self) -> None:
         axon = self.serve_validator_axon()
         try:
             while not self.should_exit:
-                asyncio.run(self.forward_once())
-                self.runtime.sync_metagraph()
-                self.scoreboard.resize(int(getattr(self.runtime.metagraph, "n", len(self.scoreboard.ema))))
-                asyncio.run(self.maybe_set_weights())
-                self.step += 1
+                try:
+                    started = time.perf_counter()
+                    delay = asyncio.run(self.forward_once())
+                    self.runtime.sync_metagraph()
+                    self.scoreboard.resize(int(getattr(self.runtime.metagraph, "n", len(self.scoreboard.ema))))
+                    asyncio.run(self.maybe_set_weights())
+                    self.step += 1
+                    remaining = float(delay) - (time.perf_counter() - started)
+                    if remaining > 0:
+                        time.sleep(remaining)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    self.log.warning(
+                        f"validator step failed, continuing: {type(exc).__name__}: {exc}"
+                    )
+                    time.sleep(2)
         except KeyboardInterrupt:
-            self.bt.logging.info("validator interrupted")
+            self.log.info("validator interrupted")
         finally:
             self.scoreboard.save(self.state_path)
             if axon is not None:

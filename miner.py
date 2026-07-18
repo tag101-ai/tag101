@@ -4,7 +4,8 @@ import asyncio
 import time
 from typing import Any, Tuple
 
-from ._bt import require_bittensor
+from ._logging import configure_logging, get_logger
+from .chain.miner_server import MinerServer
 from .chain.runtime import ChainRuntime
 from .chain.settings import build_config
 from .protocol import TaskEnvelope
@@ -13,16 +14,22 @@ from .tasks import TaskRegistry, TaskServerClient, build_task_registry
 
 class SolverMiner:
     def __init__(self, *, config: Any | None = None, registry: TaskRegistry | None = None):
-        self.bt = require_bittensor()
         self.config = config or build_config("miner")
+        configure_logging(self.config)
+        self.log = get_logger("miner")
         self.runtime = ChainRuntime(self.config, role="miner")
         self.registry = registry or self._task_registry()
         self.client = self._task_server_client()
-        self.axon = self.runtime.axon()
-        self.axon.attach(
+        host, port = self._axon_bind()
+        self.server = MinerServer(
+            wallet=self.runtime.wallet,
+            host=host,
+            port=port,
             forward_fn=self.forward,
             blacklist_fn=self.blacklist,
-            priority_fn=self.priority,
+            max_request_bytes=int(
+                getattr(getattr(self.config, "axon", None), "max_request_bytes", None) or 128 * 1024
+            ),
         )
         self.should_exit = False
 
@@ -34,15 +41,14 @@ class SolverMiner:
         except Exception:
             synapse.answer = {}
         elapsed = time.perf_counter() - started
-        self.bt.logging.info(
+        self.log.info(
             f"MINER_SOLVED_TASK task={synapse.task_id} kind={synapse.task_kind} "
             f"elapsed={elapsed:.3f}s answer_keys={list(synapse.answer)}"
         )
         return synapse
 
-    async def blacklist(self, synapse: TaskEnvelope) -> Tuple[bool, str]:
-        dendrite = getattr(synapse, "dendrite", None)
-        hotkey = getattr(dendrite, "hotkey", None)
+    async def blacklist(self, synapse: TaskEnvelope, caller_hotkey: str) -> Tuple[bool, str]:
+        hotkey = str(caller_hotkey or "")
         if not hotkey:
             allow_empty = bool(getattr(self.config.miner, "allow_empty_hotkey", False))
             return (not allow_empty), "missing caller hotkey"
@@ -60,30 +66,42 @@ class SolverMiner:
                 return True, "caller has no validator permit"
         return False, "accepted"
 
-    async def priority(self, synapse: TaskEnvelope) -> float:
-        dendrite = getattr(synapse, "dendrite", None)
-        hotkey = getattr(dendrite, "hotkey", None)
-        hotkeys = list(getattr(self.runtime.metagraph, "hotkeys", []))
-        if not hotkey or hotkey not in hotkeys:
-            return 0.0
-        stakes = getattr(self.runtime.metagraph, "S", [])
-        uid = hotkeys.index(hotkey)
-        return float(stakes[uid]) if uid < len(stakes) else 0.0
-
     def run(self) -> None:
         self.runtime.ensure_registered()
-        self.runtime.serve_axon(self.axon)
-        self.axon.start()
-        self.bt.logging.info(f"miner serving at block {self.runtime.block}")
+        self.server.start()
+        external_ip, external_port = self._axon_external()
+        if external_ip and external_port:
+            try:
+                self.runtime.publish_axon(external_ip, external_port)
+            except Exception as exc:
+                self.log.warning(
+                    f"on-chain serve-axon failed: {type(exc).__name__}: {exc}"
+                )
+        self.log.info(f"miner serving at block {self.runtime.block}")
         self._announce_private_axon_at_startup()
         try:
             while not self.should_exit:
                 self.runtime.sync_metagraph()
                 time.sleep(12)
         except KeyboardInterrupt:
-            self.bt.logging.info("miner interrupted")
+            self.log.info("miner interrupted")
         finally:
-            self.axon.stop()
+            self.server.stop()
+
+    def _axon_bind(self) -> tuple[str, int]:
+        axon = getattr(self.config, "axon", None)
+        host = str(getattr(axon, "ip", "0.0.0.0") or "0.0.0.0")
+        port = int(getattr(axon, "port", 8091) or 8091)
+        return host, port
+
+    def _axon_external(self) -> tuple[str | None, int | None]:
+        axon = getattr(self.config, "axon", None)
+        ip = getattr(axon, "external_ip", None) or getattr(axon, "ip", None)
+        port = getattr(axon, "external_port", None) or getattr(axon, "port", None)
+        ip = str(ip) if ip else None
+        if ip in ("0.0.0.0", ""):
+            ip = None
+        return ip, (int(port) if port else None)
 
     def _task_server_client(self) -> TaskServerClient | None:
         url = str(getattr(self.config.task_server, "url", "") or "").strip()
@@ -111,19 +129,19 @@ class SolverMiner:
         try:
             result = asyncio.run(self._announce_private_axon_once())
         except Exception as exc:
-            self.bt.logging.warning(
+            self.log.warning(
                 "private miner axon startup announcement failed: "
                 f"{type(exc).__name__}: {exc}"
             )
             return
 
         if not result.get("accepted") or not result.get("updated", True):
-            self.bt.logging.warning(
+            self.log.warning(
                 "private miner axon announcement returned unexpected response "
                 f"response={result}"
             )
         else:
-            self.bt.logging.info(
+            self.log.info(
                 "MINER_PRIVATE_AXON_ANNOUNCED "
                 f"netuid={int(self.config.netuid)} block={self.runtime.block}"
             )
@@ -131,21 +149,20 @@ class SolverMiner:
     async def _announce_private_axon_once(self) -> dict[str, Any]:
         if self.client is None:
             return {"accepted": False, "updated": False}
-        info = self.axon.info()
-        ip = getattr(info, "ip", None)
-        port = getattr(info, "port", None)
-        if not ip or not port:
+        external_ip, external_port = self._axon_external()
+        if not external_ip or not external_port:
             raise ValueError("private axon announcement requires external ip and port")
+        axon = getattr(self.config, "axon", None)
         return await self.client.announce_miner_axon(
             wallet=self.runtime.wallet,
             netuid=int(self.config.netuid),
             uid=int(self.runtime.uid),
             block=self.runtime.block,
-            ip=str(ip),
-            port=int(port),
+            ip=str(external_ip),
+            port=int(external_port),
             ip_type=None,
-            protocol=int(getattr(info, "protocol", 4) or 4),
-            version=int(getattr(info, "version", 0) or 0),
+            protocol=int(getattr(axon, "protocol", 4) or 4),
+            version=int(getattr(axon, "version", 0) or 0),
         )
 
     def __enter__(self) -> "SolverMiner":

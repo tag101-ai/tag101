@@ -61,6 +61,7 @@ def _copy_axon_with_endpoint(axon: Any, payload: Any) -> Any:
     setattr(private, "protocol", int(payload.protocol))
     if int(payload.version) > 0:
         setattr(private, "version", int(payload.version))
+    setattr(private, "hotkey", str(payload.hotkey))
     return private
 
 

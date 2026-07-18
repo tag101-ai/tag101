@@ -7,13 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from ._bt import bt
 
-
-SynapseBase = bt.Synapse if bt is not None else BaseModel
-
-
-class TaskEnvelope(SynapseBase):  # type: ignore[misc, valid-type]
+class TaskEnvelope(BaseModel):
     """Generic work message sent from validators to miners."""
 
     task_id: str = Field(default="", description="Server-issued question UUID.")
