@@ -8,6 +8,7 @@ touching chain objects.
 from __future__ import annotations
 
 import os
+from types import ModuleType
 from typing import Any
 
 
@@ -29,8 +30,14 @@ def require_bittensor() -> Any:
 
 def bittensor_attr(lower_name: str, upper_name: str | None = None) -> Any:
     module = require_bittensor()
-    if hasattr(module, lower_name):
-        return getattr(module, lower_name)
-    if upper_name and hasattr(module, upper_name):
-        return getattr(module, upper_name)
+    for name in (upper_name, lower_name):
+        if name and hasattr(module, name):
+            candidate = getattr(module, name)
+            if not isinstance(candidate, ModuleType):
+                return candidate
+    submodule = getattr(module, lower_name, None)
+    if isinstance(submodule, ModuleType):
+        for name in (upper_name, lower_name.capitalize()):
+            if name and hasattr(submodule, name):
+                return getattr(submodule, name)
     raise AttributeError(f"bittensor has no {lower_name!r} constructor")

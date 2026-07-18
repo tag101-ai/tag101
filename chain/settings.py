@@ -11,7 +11,6 @@ from typing import Any
 
 from munch import DefaultMunch
 
-from .._bt import bittensor_attr, require_bittensor
 from .scoreboard import DEFAULT_RAW_HISTORY_MAX_EVENTS
 
 
@@ -21,14 +20,39 @@ DEFAULT_TASK_SERVER_URL = "https://crawler.tag101.ai"
 
 
 def _add_bittensor_args(parser: argparse.ArgumentParser) -> None:
-    bt = require_bittensor()
-    wallet_cls = bittensor_attr("wallet", "Wallet")
-    subtensor_cls = bittensor_attr("subtensor", "Subtensor")
-    axon_cls = bittensor_attr("axon", "Axon")
-    wallet_cls.add_args(parser)
-    subtensor_cls.add_args(parser)
-    axon_cls.add_args(parser)
-    bt.logging.add_args(parser)
+    wallet = parser.add_argument_group("wallet")
+    wallet.add_argument("--wallet.name", dest="wallet.name",
+                        default=os.getenv("BT_WALLET_NAME", "default"))
+    wallet.add_argument("--wallet.hotkey", dest="wallet.hotkey",
+                        default=os.getenv("BT_WALLET_HOTKEY", "default"))
+    wallet.add_argument("--wallet.path", dest="wallet.path",
+                        default=os.getenv("BT_WALLET_PATH", "~/.bittensor/wallets/"))
+
+    subtensor = parser.add_argument_group("subtensor")
+    subtensor.add_argument("--subtensor.network", dest="subtensor.network",
+                           default=os.getenv("BT_NETWORK", os.getenv("SUBTENSOR_NETWORK", "finney")))
+    subtensor.add_argument("--subtensor.chain_endpoint", dest="subtensor.chain_endpoint",
+                           default=os.getenv("BT_CHAIN_ENDPOINT", None))
+
+    axon = parser.add_argument_group("axon")
+    axon.add_argument("--axon.port", dest="axon.port", type=int,
+                      default=int(os.getenv("AXON_PORT", "8091")))
+    axon.add_argument("--axon.ip", dest="axon.ip", default=os.getenv("AXON_IP", "0.0.0.0"))
+    axon.add_argument("--axon.external_ip", dest="axon.external_ip",
+                      default=os.getenv("AXON_EXTERNAL_IP", None))
+    axon.add_argument("--axon.external_port", dest="axon.external_port", type=int,
+                      default=(int(os.environ["AXON_EXTERNAL_PORT"]) if os.getenv("AXON_EXTERNAL_PORT") else None))
+
+    logging_group = parser.add_argument_group("logging")
+    logging_group.add_argument("--logging.info", dest="logging.info",
+                               action="store_true", default=_env_bool("BT_LOGGING_INFO", False),
+                               help="Log at INFO level (the default); accepted for compatibility.")
+    logging_group.add_argument("--logging.debug", dest="logging.debug",
+                               action="store_true", default=_env_bool("BT_LOGGING_DEBUG", False))
+    logging_group.add_argument("--logging.trace", dest="logging.trace",
+                               action="store_true", default=_env_bool("BT_LOGGING_TRACE", False))
+    logging_group.add_argument("--logging.logging_dir", dest="logging.logging_dir",
+                               default=os.getenv("BT_LOGGING_DIR", "~/.bittensor/sn101"))
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -146,8 +170,15 @@ def _add_validator_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--validator.axon_off", action="store_true", default=False)
 
 
+class _Config(DefaultMunch):
+    """Munch-based config replacing the removed ``bittensor.Config``."""
+
+    def is_set(self, dotted: str) -> bool:
+        marker = DefaultMunch.get(self, "_explicit_keys", None)
+        return bool(marker) and dotted in marker
+
+
 def build_config(role: str) -> Any:
-    bt = require_bittensor()
     parser = argparse.ArgumentParser(prog=f"tag101-{role}")
     _add_bittensor_args(parser)
     _add_common_args(parser)
@@ -164,10 +195,10 @@ def build_config(role: str) -> Any:
     args = sys.argv[1:]
     namespace = parser.parse_args(args)
     explicit = _explicit_destinations(parser, args)
-    config = bt.Config(parser=None)
+    config = _Config(None, {})
     for key, value in vars(namespace).items():
         _set_config_value(config, key, value)
-    _mark_explicit(config, explicit)
+    config["_explicit_keys"] = explicit
     _prepare_storage(config, role)
     if role == "validator":
         _prepare_task_profile(config)
@@ -197,12 +228,6 @@ def _explicit_destinations(parser: argparse.ArgumentParser, args: list[str]) -> 
         if option in by_option:
             explicit.add(by_option[option])
     return explicit
-
-
-def _mark_explicit(config: Any, destinations: set[str]) -> None:
-    marker = getattr(config, "_Config__is_set", None)
-    if isinstance(marker, dict):
-        marker.update({destination: True for destination in destinations})
 
 
 def _set_config_value(config: Any, dotted: str, value: Any) -> None:

@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .._bt import require_bittensor
 from .metagraph import (
     DEFAULT_SCOREBOARD_MAX_AGE_BLOCKS,
     block_within_window,
@@ -136,16 +137,54 @@ def submit_weights(
 ) -> tuple[bool, str]:
     uids = np.asarray(getattr(metagraph, "uids", np.arange(len(scores))), dtype=np.int64)
     weights = normalized_weights(scores) if normalize else _nonnegative_distribution(scores)
-    result, message = subtensor.set_weights(
+    uid_list = [int(value) for value in np.asarray(uids).ravel().tolist()]
+    weight_list = [float(value) for value in np.asarray(weights).ravel().tolist()]
+
+    return _submit_weights_intent(
+        subtensor=subtensor,
         wallet=wallet,
-        netuid=netuid,
-        uids=uids,
-        weights=weights,
-        wait_for_finalization=False,
-        wait_for_inclusion=True,
-        version_key=version_key,
+        netuid=int(netuid),
+        uids=uid_list,
+        weights=weight_list,
+        version_key=int(version_key),
     )
-    return bool(result), str(message)
+
+
+def _commit_reveal_enabled(subtensor: Any, netuid: int) -> bool:
+    subnets = getattr(subtensor, "subnets", None)
+    checker = getattr(subnets, "commit_reveal_enabled", None) if subnets is not None else None
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker(netuid=netuid))
+    except Exception:
+        return False
+
+
+def _submit_weights_intent(
+    *,
+    subtensor: Any,
+    wallet: Any,
+    netuid: int,
+    uids: list[int],
+    weights: list[float],
+    version_key: int,
+) -> tuple[bool, str]:
+    bt = require_bittensor()
+    if _commit_reveal_enabled(subtensor, netuid):
+        intent = bt.CommitWeights(netuid=netuid, uids=uids, weights=weights, version_key=version_key)
+    else:
+        intent = bt.SetWeights(netuid=netuid, uids=uids, weights=weights, version_key=version_key)
+
+    try:
+        result = subtensor.execute(intent, wallet)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    ok = getattr(result, "success", getattr(result, "is_success", True))
+    message = getattr(result, "message", None)
+    if message is None:
+        message = getattr(result, "error", "") or str(result)
+    return bool(ok), str(message)
 
 
 

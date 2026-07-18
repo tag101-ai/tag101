@@ -7,11 +7,11 @@ name = "tag101"
 version = "0.2.0"
 description = "Tag101 miner and validator runtime for decentralized social post tagging."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 authors = [{ name = "Tag101 Authors" }]
 dependencies = [
   "aiohttp==3.14.1",
-  "bittensor==10.2.1",
+  "bittensor==11.0.0",
   "httpx==0.28.1",
   "munch==4.0.0",
   "numpy==2.4.6",

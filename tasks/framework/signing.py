@@ -29,20 +29,31 @@ def sign_model(wallet: Any, model: Any) -> str:
 def verify_model_signature(hotkey: str, signature: str, model: Any) -> bool:
     if not signature:
         return False
-    import bittensor as bt
+
+    keypair = _verification_keypair(hotkey)
+    if keypair is None:
+        return False
 
     message = canonical_model_payload(model)
-    try:
-        keypair = bt.Keypair(ss58_address=hotkey)
-    except Exception:
-        return False
+    message_forms = (message.encode("utf-8"), message)
     for candidate in signature_candidates(signature):
-        try:
-            if bool(keypair.verify(message, candidate)):
-                return True
-        except Exception:
-            continue
+        for encoded_message in message_forms:
+            try:
+                if bool(keypair.verify(encoded_message, candidate)):
+                    return True
+            except Exception:
+                continue
     return False
+
+
+def _verification_keypair(hotkey: str) -> Any:
+    """Build a public-key-only keypair for signature verification."""
+    from bittensor.sp_core import Keypair
+
+    try:
+        return Keypair(ss58_address=hotkey)
+    except Exception:
+        return None
 
 
 def canonical_model_payload(model: Any) -> str:
