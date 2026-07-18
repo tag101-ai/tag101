@@ -2,7 +2,7 @@
 
 __all__ = ["SCOREBOARD_VERSION", "__version__", "semver_to_int_version"]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def semver_to_int_version(version: str) -> int:
