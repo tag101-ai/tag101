@@ -8,6 +8,7 @@ from .diversity import DiversityScorer
 from .preprocessing import (
     aggregate_miner_score,
     build_scoring_context,
+    normalize_tag,
     unflatten_scores,
 )
 from .validity import ValidityScorer
@@ -164,7 +165,12 @@ class TagScorer:
         }
 
     def _duplicate_key(self, response: list[str]) -> tuple[str, ...]:
-        return tuple(sorted(" ".join(tag.split()) for tag in response if tag))
+        canonical_tags: set[str] = set()
+        for tag in response:
+            canonical_tag = normalize_tag(tag)
+            if canonical_tag:
+                canonical_tags.add(canonical_tag)
+        return tuple(sorted(canonical_tags))
 
     def _duplicate_decay(self, count: int) -> float:
         exponent = self.duplicate_penalty_k * (float(count) - self.duplicate_penalty_c)
