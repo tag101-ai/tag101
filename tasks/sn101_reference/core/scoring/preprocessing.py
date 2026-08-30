@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import numpy as np
 
 SPAN_ENTITY_MODEL = "en_core_web_sm"
+DISALLOWED_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 SPAN_ENTITY_LABELS = frozenset(
     {
         "PERSON",
@@ -41,7 +43,19 @@ class ScoringContext:
 
 
 def normalize_tag(tag: str) -> str:
-    return re.sub(r"\s+", " ", tag.strip().lower())
+    """Return the canonical representation used by every scoring stage."""
+    value = unicodedata.normalize("NFKC", tag).casefold()
+    characters: list[str] = []
+    for character in value:
+        category = unicodedata.category(character)
+        if character.isspace() or category.startswith("Z"):
+            characters.append(" ")
+        elif category not in DISALLOWED_UNICODE_CATEGORIES:
+            characters.append(character)
+
+    # Case folding can produce decomposed output, so normalize once more after it.
+    canonical = unicodedata.normalize("NFKC", "".join(characters))
+    return re.sub(r"\s+", " ", canonical).strip()
 
 
 def preprocess_responses(
