@@ -145,7 +145,7 @@ class TagScorer:
                 "duplicate_decays": [1.0 for _ in normalized_responses],
             }
 
-        duplicate_counts_by_key: dict[tuple[str, ...], int] = {}
+        duplicate_counts_by_key: dict[tuple[tuple[int, ...], ...], int] = {}
         response_keys = [
             self._duplicate_key(response) for response in normalized_responses
         ]
@@ -163,8 +163,13 @@ class TagScorer:
             "duplicate_decays": duplicate_decays,
         }
 
-    def _duplicate_key(self, response: list[str]) -> tuple[str, ...]:
-        return tuple(sorted(" ".join(tag.split()) for tag in response if tag))
+    def _duplicate_key(self, response: list[str]) -> tuple[tuple[int, ...], ...]:
+        tokenizer = self._model.tokenizer
+        return tuple(sorted(
+            tuple(tokenizer(tag, add_special_tokens=False)["input_ids"])
+            for tag in response
+            if tag
+        ))
 
     def _duplicate_decay(self, count: int) -> float:
         exponent = self.duplicate_penalty_k * (float(count) - self.duplicate_penalty_c)
