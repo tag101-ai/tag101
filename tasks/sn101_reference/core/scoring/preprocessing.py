@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -41,6 +42,8 @@ class ScoringContext:
 
 
 def normalize_tag(tag: str) -> str:
+    tag = unicodedata.normalize("NFKC", tag)
+    tag = "".join(ch for ch in tag if unicodedata.category(ch) != "Cf")
     return re.sub(r"\s+", " ", tag.strip().lower())
 
 
