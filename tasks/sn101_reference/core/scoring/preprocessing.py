@@ -139,11 +139,7 @@ def _normalize_span(text: str) -> str:
 
 
 def _trim_stop_tokens(span: Any) -> str:
-    tokens = [
-        token
-        for token in span
-        if not token.is_punct and not token.is_space
-    ]
+    tokens = [token for token in span if not token.is_punct and not token.is_space]
     while tokens and tokens[0].is_stop:
         tokens.pop(0)
     while tokens and tokens[-1].is_stop:
@@ -154,22 +150,25 @@ def _trim_stop_tokens(span: Any) -> str:
 def unflatten_scores(
     normalized_responses: list[list[str]],
     flat_tag_scores: list[float],
-    flat_consensus_scores: list[float],
+    flat_signal_scores: list[float],
     flat_validity_scores: list[float],
 ) -> tuple[list[list[float]], list[list[float]], list[list[float]]]:
     tag_scores: list[list[float]] = []
-    consensus_scores: list[list[float]] = []
+    signal_scores: list[list[float]] = []
     validity_scores: list[list[float]] = []
 
     cursor = 0
     for tags in normalized_responses:
         count = len(tags)
-        tag_scores.append(flat_tag_scores[cursor: cursor + count])
-        consensus_scores.append(flat_consensus_scores[cursor: cursor + count])
-        validity_scores.append(flat_validity_scores[cursor: cursor + count])
+        tag_scores.append(flat_tag_scores[cursor : cursor + count])
+        signal_scores.append(flat_signal_scores[cursor : cursor + count])
+        validity_scores.append(flat_validity_scores[cursor : cursor + count])
         cursor += count
 
-    return tag_scores, consensus_scores, validity_scores
+    return tag_scores, signal_scores, validity_scores
+
+
+MAX_TAG_SCORE = 1.0
 
 
 def aggregate_miner_score(scores: list[float], top_k: int) -> float:
@@ -177,6 +176,70 @@ def aggregate_miner_score(scores: list[float], top_k: int) -> float:
         return 0.0
     top_scores = sorted(scores, reverse=True)[:top_k]
     return float(sum(top_scores) / top_k)
+
+
+def aggregate_miner_score_by_coverage(
+    *,
+    flat_tag_scores: list[float],
+    flat_miner_idx: list[int],
+    labels: list[int],
+    scored_cluster_ids: list[int],
+    miner_count: int,
+    n_tags: int,
+) -> list[float]:
+    if miner_count == 0:
+        return []
+
+    scored = list(scored_cluster_ids)
+    if scored:
+        # Per-miner best TagScore within each qualifying cluster.
+        miner_best: list[dict[int, float]] = [{} for _ in range(miner_count)]
+        scored_set = set(scored)
+        for score, miner_idx, label in zip(flat_tag_scores, flat_miner_idx, labels):
+            cid = int(label)
+            if cid not in scored_set:
+                continue
+            current = miner_best[miner_idx].get(cid)
+            if current is None or score > current:
+                miner_best[miner_idx][cid] = score
+
+        # Denominator = the absolute ceiling for an N-tag miner.
+        denominator = n_tags * MAX_TAG_SCORE
+        return [
+            float(
+                np.clip(
+                    sum(sorted(miner_best[m].values(), reverse=True)[:n_tags])
+                    / denominator,
+                    0.0,
+                    1.0,
+                )
+            )
+            for m in range(miner_count)
+        ]
+
+    # Fallback: no qualifying cluster -> pad missing tags as 0, then top-k mean.
+    per_miner_tag_scores: list[list[float]] = [[] for _ in range(miner_count)]
+    for score, miner_idx in zip(flat_tag_scores, flat_miner_idx):
+        per_miner_tag_scores[miner_idx].append(score)
+    return [
+        aggregate_miner_score(per_miner_tag_scores[m], n_tags)
+        for m in range(miner_count)
+    ]
+
+
+def repeated_set_adjustment(
+    count: int,
+    *,
+    c: float = 50.0,
+    p: float = 5.5,
+    floor: float = 0.0,
+) -> float:
+    """Hill multiplier that dampens miners submitting an identical tag set."""
+    k = max(int(count), 1)
+    if c <= 0:
+        return 1.0
+    hill = 1.0 / (1.0 + (k / c) ** p)
+    return float(floor + (1.0 - floor) * hill)
 
 
 def build_scoring_context(

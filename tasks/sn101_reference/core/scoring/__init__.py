@@ -1,11 +1,14 @@
-from .consensus import ConsensusScorer
-from .diversity import DiversityScorer
+from .clustering import ClusterView, TagClusterer
+from .signal import SignalScorer
 from .tag_scorer import TagScorer
+from .utility import UtilityScorer
 from .validity import ValidityScorer
 
 __all__ = [
     "TagScorer",
-    "ConsensusScorer",
-    "DiversityScorer",
+    "SignalScorer",
+    "UtilityScorer",
     "ValidityScorer",
+    "TagClusterer",
+    "ClusterView",
 ]

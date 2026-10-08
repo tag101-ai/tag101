@@ -3,7 +3,10 @@
 from .catalog import build_task_registry
 from .framework import (
     AnswerScorer,
+    CorpusCredentialRequest,
+    CorpusCredentialResponse,
     LeaseRequest,
+    LocalLeaseContext,
     MinerAxonAnnouncement,
     MinerAxonRequest,
     MinerAxonResponse,
@@ -14,6 +17,7 @@ from .framework import (
     ScoreboardRequest,
     ScoreboardSnapshot,
     ScoreBreakdown,
+    SignedCorpusCredentialRequest,
     SignedLeaseRequest,
     SignedMinerAxonAnnouncement,
     SignedMinerAxonRequest,
@@ -39,7 +43,10 @@ def __getattr__(name: str):
 
 __all__ = [
     "AnswerScorer",
+    "CorpusCredentialRequest",
+    "CorpusCredentialResponse",
     "LeaseRequest",
+    "LocalLeaseContext",
     "MinerAxonAnnouncement",
     "MinerAxonRequest",
     "MinerAxonResponse",
@@ -50,6 +57,7 @@ __all__ = [
     "ScoreboardRequest",
     "ScoreboardSnapshot",
     "ScoreBreakdown",
+    "SignedCorpusCredentialRequest",
     "SignedLeaseRequest",
     "SignedMinerAxonAnnouncement",
     "SignedMinerAxonRequest",
