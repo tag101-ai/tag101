@@ -15,8 +15,10 @@ from typing import Any, Mapping, Sequence
 from ..chain.runtime import ChainRuntime
 from ..protocol import TaskEnvelope
 from .framework import (
+    LocalLeaseContext,
     ScoreBreakdown,
     TaskHandler,
+    TaskLease,
 )
 from .sn101_reference.core.miner import (
     Miner as ReferenceMiner,
@@ -40,6 +42,49 @@ SN101_TEST_FALLBACK_TAGS = (
     "etf",
     "trading",
 )
+
+
+def build_local_lease(context: LocalLeaseContext) -> TaskLease:
+    """Build an SN101 lease locally from a self-selected corpus tweet.
+
+    Task-shape constants stay fixed in code so validators cannot change them.
+    """
+
+    selection = context.corpus.random_tweet(context.rng)
+    tweet = selection.tweet
+    return TaskLease(
+        task_id=context.task_id,
+        task_kind=KIND,
+        spec_version=SPEC_VERSION,
+        time_limit=SN101_TIME_LIMIT,
+        payload={
+            "tweet_id": str(tweet.get("tweet_id", "")),
+            "tweet_uuid": str(tweet.get("tweet_uuid", "")),
+            "author": str(tweet.get("author", "")),
+            "created_at": str(tweet.get("created_at", "")),
+            "url": str(tweet.get("url", "")),
+            "text": str(tweet.get("text", "")),
+            "content_sha256": selection.content_sha256,
+            "max_tags": SN101_MAX_TAGS,
+            "time_limit": SN101_TIME_LIMIT,
+        },
+        scoring={
+            "method": "tao_sn101_exp.core.scoring.TagScorer",
+            "model_name": str(context.profile.get("model_name", REFERENCE_MODEL_NAME)),
+            "n_tags_per_miner": SN101_MAX_TAGS,
+            "proximity_rank_decay": float(
+                context.profile.get("proximity_rank_decay", 1.0)
+            ),
+        },
+        metadata={
+            "dataset": "aws-corpus",
+            "tweet_uuid": str(tweet.get("tweet_uuid", "")),
+            "content_sha256": selection.content_sha256,
+            "digest_root_hash": selection.root_hash,
+            "s3_key": str(selection.entry.get("key", "")),
+            "whitelist_author": str(tweet.get("author", "")),
+        },
+    )
 
 
 def solve_problem(
@@ -73,12 +118,6 @@ def score_answers(
         responses=responses,
         n_tags_per_miner=SN101_MAX_TAGS,
         model_name=str(scoring.get("model_name", REFERENCE_MODEL_NAME)),
-        proximity_rank_decay=float(scoring.get("proximity_rank_decay", 1.0)),
-        duplicate_penalty_enabled=bool(
-            scoring.get("duplicate_penalty_enabled", True),
-        ),
-        duplicate_penalty_k=float(scoring.get("duplicate_penalty_k", 0.06)),
-        duplicate_penalty_c=float(scoring.get("duplicate_penalty_c", 80.0)),
     )
 
     rewards = [float(value) for value in result.get("miner_scores", [])]
@@ -93,6 +132,7 @@ def score_answers(
             ),
             "tweet_id": payload.get("tweet_id", ""),
             "clusters": result.get("clusters", []),
+            "scored_cluster_ids": result.get("scored_cluster_ids", []),
             "spans": result.get("spans", []),
         },
     )
@@ -104,20 +144,15 @@ def _score_with_reference(
     responses: list[list[str]],
     n_tags_per_miner: int,
     model_name: str,
-    proximity_rank_decay: float,
-    duplicate_penalty_enabled: bool,
-    duplicate_penalty_k: float,
-    duplicate_penalty_c: float,
 ) -> dict[str, Any]:
+    # Clustering/signal thresholds are fixed as class defaults inside the
+    # reference scorer (TagClusterer / SignalScorer); they are intentionally
+    # not surfaced here so validators cannot change scoring shape.
     from .sn101_reference.core.scoring import TagScorer
 
     return TagScorer(
         model_name=model_name,
         n_tags_per_miner=n_tags_per_miner,
-        proximity_rank_decay=proximity_rank_decay,
-        duplicate_penalty_enabled=duplicate_penalty_enabled,
-        duplicate_penalty_k=duplicate_penalty_k,
-        duplicate_penalty_c=duplicate_penalty_c,
     ).score(post, responses)
 
 
@@ -128,14 +163,15 @@ def _miner_metrics(
     per_miner_keys = (
         "normalized_responses",
         "tag_scores",
-        "consensus_scores",
+        "signal_scores",
         "validity_scores",
-        "diversity_scores",
+        "utility_scores",
         "validity_details",
-        "diversity_details",
+        "utility_details",
+        "cluster_labels",
         "raw_miner_scores",
-        "duplicate_counts",
-        "duplicate_decays",
+        "repeated_set_counts",
+        "repeated_set_adjustments",
     )
     metrics: list[dict[str, Any]] = []
     for index in range(miner_count):
@@ -186,6 +222,7 @@ def handler() -> TaskHandler:
         spec_version=SPEC_VERSION,
         solve_problem=solve_problem,
         score_answers=score_answers,
+        build_lease=build_local_lease,
         description=(
             "SN101 semantic tagging task backed by the reference scorer."
         ),

@@ -10,6 +10,8 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from .models import (
+    CorpusCredentialRequest,
+    CorpusCredentialResponse,
     LeaseRequest,
     MinerAxonAnnouncement,
     MinerAxonRequest,
@@ -17,6 +19,7 @@ from .models import (
     ResultReport,
     ScoreboardRequest,
     ScoreboardSnapshot,
+    SignedCorpusCredentialRequest,
     SignedLeaseRequest,
     SignedMinerAxonAnnouncement,
     SignedMinerAxonRequest,
@@ -82,6 +85,38 @@ class TaskServerClient:
             response = await client.post("/tasks/lease", json=body.model_dump())
             response.raise_for_status()
             return TaskLease.model_validate(response.json())
+
+    @TASK_SERVER_RETRY
+    async def corpus_credentials(
+        self,
+        *,
+        wallet: Any,
+        netuid: int,
+        uid: int = -1,
+        block: int = 0,
+        version: int = 1,
+    ) -> CorpusCredentialResponse:
+        payload = CorpusCredentialRequest(
+            version=int(version),
+            timestamp=time.time(),
+            hotkey=wallet_hotkey(wallet),
+            netuid=netuid,
+            uid=int(uid),
+            block=int(block),
+        )
+        body = SignedCorpusCredentialRequest(
+            payload=payload,
+            signature=sign_model(wallet, payload),
+        )
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            transport=self.transport,
+        ) as client:
+            response = await client.post("/corpus/credentials", json=body.model_dump())
+            response.raise_for_status()
+            return CorpusCredentialResponse.model_validate(response.json())
 
     @TASK_SERVER_RETRY
     async def report(

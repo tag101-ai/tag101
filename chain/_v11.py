@@ -8,6 +8,9 @@ from typing import Any
 from .._bt import require_bittensor
 
 _KNOWN_NETWORKS = frozenset({"archive", "devnet", "finney", "local", "test"})
+# An sr25519 seed is 32 bytes; a keyfile privateKey is the 64-byte expansion
+# of one, which create_from_seed rejects and create_from_private_key accepts.
+PRIVATE_KEY_BYTES = 64
 
 
 def normalize_network_endpoint(network: str | None) -> str | None:
@@ -217,6 +220,52 @@ def subnet_exists(subtensor: Any, netuid: int) -> bool:
 
 def get_balance(subtensor: Any, ss58_address: str) -> Any:
     return subtensor.balances.get(ss58_address)
+
+
+def keypair_from_secret(secret: str) -> Any:
+    """Build a keypair from a hotkey secret, in any form a keyfile can hold.
+
+    A 32-byte hex seed, the 64-byte private key that is all a uri-derived
+    keyfile keeps, a mnemonic, or a ``//Dev//uri``. One accessor, so no caller
+    has to sniff the format; errors never quote the secret.
+    """
+    from bittensor.sp_core import Keypair
+
+    value = str(secret or "").strip()
+    if value.startswith("//"):
+        return Keypair.create_from_uri(value)
+    if len(value.split()) > 1:
+        return Keypair.create_from_mnemonic(value)
+    try:
+        raw = bytes.fromhex(value.removeprefix("0x"))
+    except ValueError:
+        raise ValueError(
+            "wallet secret must be a hex seed, a hex private key, a mnemonic, "
+            "or a //Dev//uri"
+        ) from None
+    if len(raw) == PRIVATE_KEY_BYTES:
+        return Keypair.create_from_private_key(f"0x{raw.hex()}")
+    return Keypair.create_from_seed(raw)
+
+
+def load_wallet_from_secret(
+    wallet: Any, *, hotkey_secret: str, coldkey_ss58: str | None = None
+) -> Any:
+    """Load a secret-derived hotkey into ``wallet`` without touching a keyfile.
+
+    The bittensor 11 wallet reads a keyfile only when its cached keypair is
+    empty, so filling that cache is enough to run a neuron with no wallet
+    directory at all: the private key then exists only in this process. Only the
+    public half of the coldkey is loaded — a miner signs with its hotkey and
+    sends no extrinsic — and it exists so consumers that group miners by coldkey
+    keep seeing one.
+    """
+    from bittensor.sp_core import Keypair
+
+    wallet._hotkey = keypair_from_secret(hotkey_secret)
+    if coldkey_ss58:
+        wallet._coldkeypub = Keypair(ss58_address=str(coldkey_ss58))
+    return wallet
 
 
 def import_wallet_from_uris(

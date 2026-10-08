@@ -12,11 +12,15 @@ from typing import Any
 from munch import DefaultMunch
 
 from .scoreboard import DEFAULT_RAW_HISTORY_MAX_EVENTS
+from .weights import DEFAULT_SET_WEIGHTS_TIMEOUT
 
 
 SN101_TASK_INTERVAL_SECONDS = 15 * 60
 SN101_ONE_DAY_EMA_ALPHA = 2.0 / ((24 * 60 // 15) + 1)
 DEFAULT_TASK_SERVER_URL = "https://crawler.tag101.ai"
+DEFAULT_CORPUS_EXPECTED_ROOT_HASH = (
+    "af6ff0739c44bdcde99c5f1c69ccd26774def0459232a1a9aa6cf373d2c16b0c"
+)
 
 
 def _add_bittensor_args(parser: argparse.ArgumentParser) -> None:
@@ -27,6 +31,15 @@ def _add_bittensor_args(parser: argparse.ArgumentParser) -> None:
                         default=os.getenv("BT_WALLET_HOTKEY", "default"))
     wallet.add_argument("--wallet.path", dest="wallet.path",
                         default=os.getenv("BT_WALLET_PATH", "~/.bittensor/wallets/"))
+    wallet.add_argument("--wallet.hotkey_seed", dest="wallet.hotkey_seed",
+                        default=os.getenv("BT_WALLET_HOTKEY_SEED", ""),
+                        help=("Hex seed, hex private key, mnemonic, or //Dev//uri for this "
+                              "neuron's hotkey. When set, the keys are derived at startup and "
+                              "--wallet.path is not read."))
+    wallet.add_argument("--wallet.coldkey_ss58", dest="wallet.coldkey_ss58",
+                        default=os.getenv("BT_WALLET_COLDKEY_SS58", ""),
+                        help=("Public coldkey address stored next to a seed-derived hotkey, so "
+                              "consumers that group miners by coldkey keep seeing one."))
 
     subtensor = parser.add_argument_group("subtensor")
     subtensor.add_argument("--subtensor.network", dest="subtensor.network",
@@ -127,6 +140,34 @@ def _add_validator_args(parser: argparse.ArgumentParser) -> None:
         help="Optional task kind requested from the task server, for example sn101.tags.v1.",
     )
     parser.add_argument(
+        "--corpus.digest_ttl",
+        dest="corpus.digest_ttl",
+        type=float,
+        default=float(os.getenv("CORPUS_DIGEST_TTL", str(SN101_TASK_INTERVAL_SECONDS))),
+        help="Seconds to cache the verified corpus digest before reloading.",
+    )
+    parser.add_argument(
+        "--corpus.expected_root_hash",
+        dest="corpus.expected_root_hash",
+        type=str,
+        default=os.getenv(
+            "CORPUS_EXPECTED_ROOT_HASH",
+            DEFAULT_CORPUS_EXPECTED_ROOT_HASH,
+        ),
+        help=(
+            "Pin the corpus to this published root_hash. When set, the validator "
+            "refuses to lease if the downloaded digest's root_hash differs, so "
+            "the corpus operator cannot silently swap the question set."
+        ),
+    )
+    parser.add_argument(
+        "--corpus.credentials_ttl",
+        dest="corpus.credentials_ttl",
+        type=float,
+        default=float(os.getenv("CORPUS_CREDENTIALS_TTL", str(SN101_TASK_INTERVAL_SECONDS))),
+        help="Seconds to cache corpus credentials fetched from the task server.",
+    )
+    parser.add_argument(
         "--task.profile_json",
         type=str,
         default=os.getenv("TASK_PROFILE_JSON", "{}"),
@@ -166,6 +207,17 @@ def _add_validator_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--validator.disable_set_weights", action="store_true", default=False)
     parser.add_argument("--validator.min_steps_before_set_weights", type=int, default=5)
+    parser.add_argument(
+        "--validator.set_weights_timeout",
+        type=float,
+        default=float(
+            os.getenv("VALIDATOR_SET_WEIGHTS_TIMEOUT", str(DEFAULT_SET_WEIGHTS_TIMEOUT))
+        ),
+        help=(
+            "Seconds to wait for an on-chain weight submission before giving up "
+            "and rebuilding the chain connection. 0 disables the deadline."
+        ),
+    )
     parser.add_argument("--validator.max_response_bytes", type=int, default=128 * 1024)
     parser.add_argument("--validator.axon_off", action="store_true", default=False)
 

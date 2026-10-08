@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
+from .. import __version__, semver_to_int_version
 from .._bt import require_bittensor
 from .metagraph import (
     DEFAULT_SCOREBOARD_MAX_AGE_BLOCKS,
@@ -16,9 +18,18 @@ from .metagraph import (
 from ..tasks.framework.models import SignedScoreboardSnapshot
 from ..tasks.framework.signing import verify_model_signature
 
-VERSION_KEY = 100100
+# Sent with every weight submission. Every release from 1.1 encodes above the
+# 100100 that all earlier releases sent, and keys only grow, so the subnet's
+# WeightsVersionKey hyperparameter can reject validators that have not upgraded.
+VERSION_KEY = semver_to_int_version(__version__)
+
+# Share of each weight row routed to BURN_UID before miners split the rest.
+# 0.0 turns the burn off: submit_weights then leaves the row untouched.
 BURN_UID = 0
-BURN_WEIGHT_SHARE = 0.9
+BURN_WEIGHT_SHARE = 0.0
+# A healthy finney submission returns in ~30s; anything past this is a wedged
+# websocket, not a slow chain.
+DEFAULT_SET_WEIGHTS_TIMEOUT = 180.0
 
 
 @dataclass(frozen=True)
@@ -127,6 +138,37 @@ def aggregate_validator_scores(
     )
 
 
+def qualified_validator_stake(metagraph: Any) -> float:
+    """Total stake of neurons that qualify as validators: hold a validator
+    permit, have positive stake, and carry no miner incentive (owner exempt)."""
+    hotkeys = [str(value) for value in getattr(metagraph, "hotkeys", [])]
+    size = int(getattr(metagraph, "n", len(hotkeys)))
+    if size <= 0:
+        size = len(hotkeys)
+    stakes = _stake_values(metagraph, size)
+    validator_permit = getattr(metagraph, "validator_permit", None)
+    total = 0.0
+    for uid in range(size):
+        if not _has_validator_permit(validator_permit, uid):
+            continue
+        stake = float(stakes[uid]) if uid < len(stakes) else 0.0
+        if stake <= 0.0:
+            continue
+        if non_owner_has_incentive(metagraph, uid):
+            continue
+        total += stake
+    return total
+
+
+def _has_validator_permit(validator_permit: Any, uid: int) -> bool:
+    if validator_permit is None:
+        return False
+    try:
+        return bool(validator_permit[uid])
+    except (IndexError, KeyError, TypeError):
+        return False
+
+
 def submit_weights(
     *,
     subtensor: Any,
@@ -151,6 +193,53 @@ def submit_weights(
         weights=weight_list,
         version_key=int(version_key),
     )
+
+
+class WeightSubmissionTimeout(TimeoutError):
+    """Raised when a weight submission outlives its deadline."""
+
+
+def submit_weights_with_deadline(
+    *,
+    timeout: float = DEFAULT_SET_WEIGHTS_TIMEOUT,
+    **kwargs: Any,
+) -> tuple[bool, str]:
+    """``submit_weights``, but it always returns.
+
+    ``subtensor.execute`` waits on a finalization subscription with no deadline
+    of its own (``bittensor.sync._Loop.call`` accepts a timeout, but nothing on
+    the public path ever passes one), so a half-open connection to the chain
+    endpoint blocks the caller forever rather than raising. Run it on a daemon
+    thread instead and abandon the thread if it overruns.
+
+    A ``timeout`` of zero or less runs the submission inline, undeadlined.
+
+    The abandoned thread cannot be killed and stays parked on the dead socket,
+    so callers must rebuild the subtensor connection before submitting again —
+    see ``ChainRuntime.reconnect``, whose ``close()`` releases that thread.
+    """
+    if timeout <= 0:
+        return submit_weights(**kwargs)
+
+    outcome: list[tuple[bool, str]] = []
+    failure: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            outcome.append(submit_weights(**kwargs))
+        except BaseException as exc:  # re-raised on the calling thread below
+            failure.append(exc)
+
+    worker = threading.Thread(target=_run, name="tag101-submit-weights", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise WeightSubmissionTimeout(
+            f"weight submission did not return within {timeout:.0f}s"
+        )
+    if failure:
+        raise failure[0]
+    return outcome[0]
 
 
 def _commit_reveal_enabled(subtensor: Any, netuid: int) -> bool:
@@ -211,6 +300,9 @@ def _with_burn_weight_share(
         return weights
 
     burn_share = min(max(float(share), 0.0), 1.0)
+    if burn_share <= 0.0:
+        # Burn off: keep the row as scored, burn uid's own slot included.
+        return weights
     remaining_share = 1.0 - burn_share
     adjusted = np.zeros_like(weights, dtype=np.float64)
     adjusted[burn_uid] = burn_share

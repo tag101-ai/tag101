@@ -1,6 +1,8 @@
 aiohttp==3.14.1
 bittensor==11.0.0
+boto3>=1.34
 httpx==0.28.1
+inflect==7.5.0
 munch==4.0.0
 numpy==2.4.6
 pydantic==2.13.4

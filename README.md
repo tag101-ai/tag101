@@ -32,28 +32,30 @@ The whitelist may be updated periodically as new topic seasons are introduced, a
 
 $$
 \text{TagScore}(t)
-= 0.6 \times C(t)+0.4 \times V(t)\times D(t)
+= \mathrm{mean}\left( \mathrm{Sig}(t),\ V(t),\ \mathrm{Util}(t) \right)
 $$
 
 where:
 
-- $C(t)$ is the consensus score
+- $\mathrm{Sig}(t)$ is the signal score
 - $V(t)$ is the validity score
-- $D(t)$ is the diversity score
+- $\mathrm{Util}(t)$ is the utility score
 
-The scoring design rewards tags that are aligned with other high-quality submissions, grounded in the original post, and not redundant with the miner’s own tags. The miner’s final task score is computed from its submitted tag scores.
+The scoring design rewards tags that are aligned with other high-quality submissions, grounded in the original post, and expressed as well-formed, informative labels. The miner’s final task score is aggregated from its submitted tag scores.
 
-### Consensus Score
+### Signal Score
 
-Tags from all miners are embedded and clustered. The score reflects how strongly a tag aligns with the dominant interpretation:
+The signal score measures how clearly a tag represents a stable semantic signal within the tag space for a post.
 
 $$
-C(t)
-= S(c) \times P(t)
+\mathrm{Sig}(t)
+= S(c) \times R(t)^{1/2} \times P(t)^{1/4} \times C(t)^{1/4}
 $$
 
-- $S(c)$: cluster support
-- $P(t)$: centroid proximity, which rewards tags closer to the semantic center of their cluster
+- $S(c)$: semantic evidence strength — the cluster's log-scaled distinct-miner support. Log scaling gives diminishing returns, so duplicate tags cannot inflate the score.
+- $R(t)$: proximity, which rewards tags closer to the semantic center of their cluster (a blend of centroid similarity and local density).
+- $P(t)$: perturbation stability — whether the tag keeps its meaning under light lexical rewrites.
+- $C(t)$: canonical consistency — whether the tag's canonical views agree in embedding space.
 
 ### Validity Score
 
@@ -76,43 +78,43 @@ $$
 
 This keeps validity stable while filtering tags that are unrelated, malformed, or outside the expected tag format.
 
-### Diversity Score
+### Utility Score
 
-Diversity measures whether a miner’s tags are semantically distinct from one another.
+Utility measures whether a tag is a well-separated, informative label.
 
 $$
-D(t) = \text{novelty}(\max_{t' \in T_m, t' \neq t} \text{sim}(t, t'))
+\mathrm{Util}(t) = 0.70 \times U(t) + 0.30 \times F(t)
 $$
 
-where $D(t) \in [0, 1]$. 
+where:
 
-The $\text{novelty}()$ function maps the highest similarity to a diversity score: sufficiently distinct tags receive full credit, near-duplicate tags receive no credit, and intermediate cases decay linearly.
-
-Tags that are too similar to the miner’s other tags receive lower diversity scores, reducing the reward for repeated or redundant submissions.
+- $U(t)$: silhouette utility, derived from the cosine silhouette of $t$ within the shared clustering, so better-separated tags score higher. A neutral value is used when the silhouette is not computable.
+- $F(t)$: label fitness, which rewards concise semantic labels — named entities, noun phrases, acronyms, model / product names — and penalizes sentence-like or low-content phrases.
 
 ### Aggregation
 
-After each submitted tag is scored independently, the miner’s task score is computed by averaging its tag scores:
+Each tag is scored independently. A miner’s task score sums the miner’s best `TagScore` in each qualifying cluster it covers (limited to its tag budget), normalized against the absolute ceiling an $N$-tag miner could reach.
+
+Let \(N\) be the number of submitted tags, and let \(Q\) be the set of qualifying clusters:
 
 $$
 \text{MinerScore}(m)
-= \frac{1}{|T_m|}
-\sum_{t \in T_m}
-\text{TagScore}(t)
+= \frac{\sum_{c}^{\text{top-}N} \max_{t \in m,\, c} \text{TagScore}(t)}
+       {N \times \text{TagScore}_{\max}}
 $$
 
-This score represents the miner’s performance on a single tagging task.
+If no cluster qualifies, the scorer falls back to the miner’s mean top tag score.
 
-### Duplicate Penalty
+### Repeated-Set Adjustment
 
-`TagScorer` then scales each miner’s score down when the same tag set appears multiple times on one task. Let $n$ be the number of miners sharing that set:
+`TagScorer` then scales each miner’s score down when the same tag set is submitted by multiple miners on one task. Let $n$ be the number of miners sharing that identical set:
 
 $$
 \text{AdjustedMinerScore}(m)
-= \text{MinerScore}(m) \times \frac{1}{1 + \exp\bigl(k \cdot (n - c)\bigr)}
+= \text{MinerScore}(m) \times \left(\text{floor} + \frac{1 - \text{floor}}{1 + (n / c)^{p}}\right)
 $$
 
-Reference defaults: $k = 0.1$, $c = 50$. Larger identical groups are penalized more sharply.
+Reference defaults: $c = 50$, $p = 5.5$, $\text{floor} = 0$.
 
 Over time, validator scoreboards aggregate miner performance across multiple tasks and convert recent task-level scores into relative miner scores for weight calculation.
 
