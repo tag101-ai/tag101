@@ -16,6 +16,7 @@ class ValidityScorer:
         r"(https?://\S+|www\.\S+|\b[a-z0-9-]+\.(com|org|net|io|ai|co)\b)",
         re.IGNORECASE,
     )
+    MAX_TAG_CHARS = 100
 
     def __init__(
         self,
@@ -35,7 +36,11 @@ class ValidityScorer:
         )
         return self.score_from_context(context)
 
-    def score_from_context(self, context: ScoringContext) -> dict[str, Any]:
+    def score_from_context(
+        self,
+        context: ScoringContext,
+        tag_embeddings: Any | None = None,
+    ) -> dict[str, Any]:
         if context.miner_count == 0:
             return {
                 "validity_scores": [],
@@ -54,7 +59,10 @@ class ValidityScorer:
 
         post_embedding = self._embed_texts([context.post])[0]
         span_embeddings = self._embed_texts(context.spans)
-        tag_embeddings = self._embed_texts(context.flat_tags)
+        # Reuse the shared tag embeddings when provided (avoids re-encoding
+        # the same flat tags the clusterer already embedded).
+        if tag_embeddings is None:
+            tag_embeddings = self._embed_texts(context.flat_tags)
 
         flat_validity_scores, raw_details = self._compute_flat_scores(
             tags=context.flat_tags,
@@ -177,6 +185,8 @@ class ValidityScorer:
     def _format_score(self, tag: str) -> float:
         normalized = tag.strip()
         if not normalized:
+            return 0.0
+        if len(normalized) > self.MAX_TAG_CHARS:
             return 0.0
         if self._URL_PATTERN.search(normalized):
             return 0.0

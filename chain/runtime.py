@@ -73,6 +73,27 @@ class ChainRuntime:
         self.metagraph = _v11.fetch_metagraph_snapshot(self.subtensor, self.config.netuid)
         self.uid = self.find_uid()
 
+    def reconnect(self) -> None:
+        """Rebuild the subtensor client after the chain connection wedges.
+
+        A timed-out call leaves its worker parked on the old socket, so the old
+        client is closed (bounded teardown: a 5s loop call plus a 5s thread
+        join) to release it, and a cold replacement is built in its place.
+        """
+        bt = require_bittensor()
+        network_arg = _subtensor_network_arg(self.config)
+        stale = self.subtensor
+        self.subtensor = _v11.build_subtensor(bt, network_arg)
+        self._cached_block = None
+        self._cached_at = 0.0
+        try:
+            stale.close()
+        except Exception as exc:
+            _log.warning(
+                f"discarded subtensor did not close cleanly: {type(exc).__name__}: {exc}"
+            )
+        _log.warning(f"{self.role} rebuilt subtensor connection endpoint={network_arg}")
+
     def publish_axon(self, ip: str, port: int) -> Any:
         """Publish this neuron's HTTP endpoint on-chain."""
         bt = require_bittensor()
@@ -98,7 +119,7 @@ def _subtensor_network_arg(config: Any) -> str | None:
 
 
 def _build_wallet(wallet_cls: Any, config: Any) -> Any:
-    """Construct a wallet from the configured name/hotkey/path."""
+    """Construct a wallet from a hotkey seed, or from the configured name/hotkey/path."""
     wallet_config = getattr(config, "wallet", None)
     kwargs = {
         "name": getattr(wallet_config, "name", None),
@@ -106,4 +127,21 @@ def _build_wallet(wallet_cls: Any, config: Any) -> Any:
         "path": getattr(wallet_config, "path", None),
     }
     kwargs = {key: value for key, value in kwargs.items() if value is not None}
-    return wallet_cls(**kwargs)
+
+    secret = str(getattr(wallet_config, "hotkey_seed", None) or "").strip()
+    if not secret:
+        return wallet_cls(**kwargs)
+
+    # The name/hotkey/path still identify the wallet in logs and storage paths;
+    # with a seed configured, nothing is ever read from that path.
+    wallet = wallet_cls(**kwargs)
+    _v11.load_wallet_from_secret(
+        wallet,
+        hotkey_secret=secret,
+        coldkey_ss58=getattr(wallet_config, "coldkey_ss58", None),
+    )
+    _log.info(
+        f"wallet derived from secret: hotkey={kwargs.get('hotkey')} "
+        f"ss58={wallet.hotkey.ss58_address} (keys stay in memory)"
+    )
+    return wallet

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tag101"
-version = "0.3.0"
+version = "1.1.0"
 description = "Tag101 miner and validator runtime for decentralized social post tagging."
 readme = "README.md"
 requires-python = "==3.12.*"
@@ -12,7 +12,9 @@ authors = [{ name = "Tag101 Authors" }]
 dependencies = [
   "aiohttp==3.14.1",
   "bittensor==11.0.0",
+  "boto3>=1.34",
   "httpx==0.28.1",
+  "inflect==7.5.0",
   "munch==4.0.0",
   "numpy==2.4.6",
   "pydantic==2.13.4",

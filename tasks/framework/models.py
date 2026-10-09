@@ -8,6 +8,7 @@ from ipaddress import ip_address
 
 from pydantic import BaseModel, Field, field_validator
 
+from .corpus_hashing import DEFAULT_CORPUS_PREFIX
 from .scoring import ScoreBreakdown
 
 
@@ -142,6 +143,37 @@ class MinerAxonResponse(BaseModel):
     axons: list[SignedMinerAxonAnnouncement] = Field(default_factory=list)
 
 
+class CorpusCredentialRequest(BaseModel):
+    version: int = 1
+    timestamp: float
+    hotkey: str
+    netuid: int
+    uid: int = -1
+    block: int = 0
+
+
+class SignedCorpusCredentialRequest(BaseModel):
+    payload: CorpusCredentialRequest
+    signature: str = ""
+
+
+class CorpusCredentialResponse(BaseModel):
+    """Read-only corpus access material handed to a qualified validator."""
+
+    rotation_id: str = ""
+    access_key_id: str = ""
+    secret_access_key: str = ""
+    session_token: str | None = None
+    region: str = ""
+    endpoint_url: str | None = None
+    bucket: str = ""
+    prefix: str = DEFAULT_CORPUS_PREFIX
+    object_key_template: str = "{prefix}/tweets/{tweet_uuid}.json"
+    digest_url: str = ""
+    digest_key: str | None = None
+    expires_at: float | None = None
+
+
 class MinerResult(BaseModel):
     uid: int
     answer: dict[str, Any] = Field(default_factory=dict)
@@ -164,6 +196,9 @@ __all__ = [
     "MinerAxonRequest",
     "SignedMinerAxonRequest",
     "MinerAxonResponse",
+    "CorpusCredentialRequest",
+    "SignedCorpusCredentialRequest",
+    "CorpusCredentialResponse",
     "MinerResult",
     "ScoreBreakdown",
 ]

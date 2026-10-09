@@ -7,6 +7,8 @@ the top-level task modules that project teams customize.
 
 from .base import (
     AnswerScorer,
+    LocalLeaseBuilder,
+    LocalLeaseContext,
     MinerSolver,
     TaskAnswer,
     TaskHandler,
@@ -14,6 +16,8 @@ from .base import (
     TaskProfile,
 )
 from .models import (
+    CorpusCredentialRequest,
+    CorpusCredentialResponse,
     LeaseRequest,
     MinerAxonAnnouncement,
     MinerAxonRequest,
@@ -22,6 +26,7 @@ from .models import (
     ResultReport,
     ScoreboardRequest,
     ScoreboardSnapshot,
+    SignedCorpusCredentialRequest,
     SignedLeaseRequest,
     SignedMinerAxonAnnouncement,
     SignedMinerAxonRequest,
@@ -43,7 +48,11 @@ def __getattr__(name: str):
 
 __all__ = [
     "AnswerScorer",
+    "CorpusCredentialRequest",
+    "CorpusCredentialResponse",
     "LeaseRequest",
+    "LocalLeaseBuilder",
+    "LocalLeaseContext",
     "MinerAxonAnnouncement",
     "MinerAxonRequest",
     "MinerAxonResponse",
@@ -54,6 +63,7 @@ __all__ = [
     "ScoreboardRequest",
     "ScoreboardSnapshot",
     "ScoreBreakdown",
+    "SignedCorpusCredentialRequest",
     "SignedLeaseRequest",
     "SignedMinerAxonAnnouncement",
     "SignedMinerAxonRequest",

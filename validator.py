@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +17,53 @@ from .chain.runtime import ChainRuntime
 from .chain.scoreboard import ScoreBoard
 from .chain.selector import CandidatePolicy, miner_candidates
 from .chain.settings import build_config
-from .chain.weights import aggregate_validator_scores, submit_weights
+from .chain.weights import (
+    WeightSubmissionTimeout,
+    aggregate_validator_scores,
+    qualified_validator_stake,
+    submit_weights_with_deadline,
+)
 from .protocol import envelope_from_lease
-from .tasks import TaskRegistry, TaskServerClient, default_registry
+from .tasks import LocalLeaseContext, TaskRegistry, TaskServerClient, default_registry
+from .tasks.framework.corpus_client import (
+    CorpusObjectError,
+    CorpusReader,
+    CredentialFetchError,
+    DigestFetchError,
+    DigestVerificationError,
+)
+
+# Trust aggregated scoreboards only above this fraction of qualified validator stake.
+MIN_AGGREGATED_STAKE_FRACTION = 0.5
+
+# Corpus provenance forwarded from the local lease into the report so each
+# scored question is auditable against the public digest.
+_LEASE_PROVENANCE_KEYS = (
+    "dataset",
+    "tweet_uuid",
+    "content_sha256",
+    "digest_root_hash",
+    "s3_key",
+)
+
+
+def _lease_corpus_provenance(lease: Any) -> dict[str, Any]:
+    meta = getattr(lease, "metadata", {}) or {}
+    return {key: meta[key] for key in _LEASE_PROVENANCE_KEYS if key in meta}
+
+
+def _lease_failure_label(exc: BaseException) -> str:
+    """Map a corpus lease failure to a distinct, greppable log label."""
+
+    if isinstance(exc, CredentialFetchError):
+        return "corpus credential fetch failed"
+    if isinstance(exc, DigestFetchError):
+        return "corpus digest fetch failed"
+    if isinstance(exc, DigestVerificationError):
+        return "corpus digest verification failed"
+    if isinstance(exc, CorpusObjectError):
+        return "corpus object fetch/verification failed"
+    return "local lease build failed"
 
 
 class SolverValidator:
@@ -32,6 +78,24 @@ class SolverValidator:
             timeout=float(self.config.task_server.timeout),
             verify_ssl=bool(self.config.task_server.verify_ssl),
         )
+        # Task handlers can opt into self-selected questions from the AWS corpus.
+        self._corpus = CorpusReader(
+            digest_ttl=float(getattr(self.config.corpus, "digest_ttl", 900.0)),
+            expected_root_hash=str(
+                getattr(self.config.corpus, "expected_root_hash", "") or ""
+            ),
+        )
+        self._corpus_creds: dict[str, Any] | None = None
+        self._corpus_creds_at = 0.0
+        handler = self._configured_task_handler()
+        if handler.build_lease is not None:
+            self.log.info(
+                "validator leases from the AWS tweet corpus (self-selected)"
+            )
+        else:
+            self.log.info(
+                f"validator leases {handler.kind} tasks from the task server"
+            )
         self.transport = HttpTransport(
             self.runtime.wallet,
             max_response_bytes=int(self.config.validator.max_response_bytes),
@@ -72,19 +136,85 @@ class SolverValidator:
             profile["time_limit"] = self.config.task.time_limit
         return profile
 
-    async def forward_once(self) -> float:
-        """Run one validator round and return the seconds to wait before the next round."""
-        started = time.perf_counter()
+    def _configured_task_handler(self) -> Any:
+        kind = str(
+            getattr(getattr(self.config, "task", None), "kind", "")
+            or self.registry.default_kind
+        )
+        return self.registry.handler_for(kind)
+
+    async def _lease_from_corpus(self) -> Any:
+        credentials = await self._corpus_credentials()
+        task_id = str(uuid.uuid4())
+        profile = self._task_profile()
+        # boto3/S3 reads are blocking; run the build off the event loop.
+        return await asyncio.to_thread(
+            self._build_corpus_lease, credentials, task_id, profile
+        )
+
+    def _build_corpus_lease(
+        self,
+        credentials: dict[str, Any],
+        task_id: str,
+        profile: dict[str, Any],
+    ) -> Any:
         try:
-            lease = await self.client.lease(
+            self._corpus.update(credentials)
+        except ValueError as exc:
+            raise CredentialFetchError(f"invalid corpus credentials: {exc}") from exc
+        handler = self._configured_task_handler()
+        context = LocalLeaseContext(
+            task_id=task_id,
+            corpus=self._corpus,
+            rng=random.Random(),
+            profile=profile,
+        )
+        return handler.build_local_lease(context)
+
+    async def _corpus_credentials(self) -> dict[str, Any]:
+        now = time.time()
+        ttl = float(getattr(self.config.corpus, "credentials_ttl", 900.0))
+        if self._corpus_creds is not None and (now - self._corpus_creds_at) < ttl:
+            return self._corpus_creds
+        try:
+            response = await self.client.corpus_credentials(
                 wallet=self.runtime.wallet,
                 netuid=int(self.config.netuid),
                 uid=int(self.runtime.uid),
-                profile=self._task_profile(),
+                block=int(self.runtime.block),
             )
         except Exception as exc:
+            raise CredentialFetchError(
+                f"failed to fetch corpus credentials from task server: {exc}"
+            ) from exc
+        self._corpus_creds = response.model_dump()
+        self._corpus_creds_at = now
+        return self._corpus_creds
+
+    async def forward_once(self) -> float:
+        """Run one validator round and return the seconds to wait before the next round."""
+        started = time.perf_counter()
+        handler = self._configured_task_handler()
+        uses_corpus = handler.build_lease is not None
+        try:
+            if uses_corpus:
+                lease = await self._lease_from_corpus()
+            else:
+                lease = await self.client.lease(
+                    wallet=self.runtime.wallet,
+                    netuid=int(self.config.netuid),
+                    uid=int(self.runtime.uid),
+                    block=int(self.runtime.block),
+                    profile=self._task_profile(),
+                )
+        except Exception as exc:
+            label = (
+                _lease_failure_label(exc)
+                if uses_corpus
+                else "task lease failed after task server retries"
+            )
             self.log.warning(
-                "task lease failed after task server retries; skipping validator round "
+                f"{label}; skipping validator round "
                 f"error={type(exc).__name__}: {exc}"
             )
             return 60.0
@@ -130,6 +260,7 @@ class SolverValidator:
                 metadata={
                     "task_kind": lease.task_kind,
                     "spec_version": lease.spec_version,
+                    **_lease_corpus_provenance(lease),
                     **scores.report_metadata(),
                 },
             )
@@ -285,35 +416,73 @@ class SolverValidator:
             scoreboards=scoreboards,
             current_block=current_block,
         )
-        if not aggregated.accepted_hotkeys:
-            self.log.error(
-                "no valid signed validator scoreboards available for set_weights "
-                f"scoreboards={len(scoreboards)} current_block={current_block} "
-                f"rejected={list(aggregated.rejected[:10])}"
-            )
-            return
         if aggregated.rejected:
             self.log.warning(
                 "ignored signed validator scoreboards: "
                 f"{list(aggregated.rejected[:10])}"
             )
 
-        ok, message = submit_weights(
-            subtensor=self.runtime.subtensor,
-            wallet=self.runtime.wallet,
-            netuid=int(self.config.netuid),
-            metagraph=self.runtime.metagraph,
-            scores=aggregated.weights,
-            normalize=False,
+        qualified_stake = qualified_validator_stake(self.runtime.metagraph)
+        coverage = (
+            aggregated.total_stake / qualified_stake if qualified_stake > 0.0 else 0.0
         )
+        if coverage <= MIN_AGGREGATED_STAKE_FRACTION:
+            self.log.warning(
+                "aggregated validator scoreboard stake does not exceed the "
+                "required fraction of qualified validator stake; setting weights "
+                "from the local scoreboard instead "
+                f"accepted={len(aggregated.accepted_hotkeys)} "
+                f"aggregated_stake={aggregated.total_stake:.6f} "
+                f"qualified_stake={qualified_stake:.6f} "
+                f"coverage={coverage:.4f} min_fraction={MIN_AGGREGATED_STAKE_FRACTION:.4f} "
+                f"rejected={list(aggregated.rejected[:10])}"
+            )
+            self._set_weights_from_local_scoreboard()
+            return
+
+        submission = self._submit_weights(aggregated.weights)
+        if submission is None:
+            return
+        ok, message = submission
         if ok:
             self.last_weight_block = self.runtime.block
             self.log.info(
                 "VALIDATOR_SET_WEIGHTS_SUCCESS weights submitted "
-                f"validators={len(aggregated.accepted_hotkeys)} stake={aggregated.total_stake:.6f}"
+                f"validators={len(aggregated.accepted_hotkeys)} "
+                f"stake={aggregated.total_stake:.6f} coverage={coverage:.4f}"
             )
         else:
             self.log.error(f"weight submission failed: {message}")
+
+    def _set_weights_from_local_scoreboard(self) -> None:
+        submission = self._submit_weights(self.scoreboard.scores)
+        if submission is None:
+            return
+        ok, message = submission
+        if ok:
+            self.last_weight_block = self.runtime.block
+            self.log.info(
+                "VALIDATOR_SET_WEIGHTS_SUCCESS local scoreboard submitted "
+                "(insufficient aggregated validator stake coverage)"
+            )
+        else:
+            self.log.error(f"local weight submission failed: {message}")
+
+    def _submit_weights(self, scores: Any) -> tuple[bool, str] | None:
+        try:
+            return submit_weights_with_deadline(
+                timeout=float(self.config.validator.set_weights_timeout),
+                subtensor=self.runtime.subtensor,
+                wallet=self.runtime.wallet,
+                netuid=int(self.config.netuid),
+                metagraph=self.runtime.metagraph,
+                scores=scores,
+                normalize=False,
+            )
+        except WeightSubmissionTimeout as exc:
+            self.log.error(f"VALIDATOR_SET_WEIGHTS_TIMEOUT {exc}")
+            self.runtime.reconnect()
+            return None
 
     def serve_validator_axon(self) -> Any | None:
         return None
